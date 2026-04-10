@@ -1,0 +1,15 @@
+Your previous response could not be parsed as valid JSON.
+
+Parse error:
+{error}
+
+Your previous response was:
+{raw_response}
+
+You MUST respond with ONLY valid JSON — no prose, no markdown code blocks.
+The required schema is:
+{{
+  "summary": "<concise prose summary>",
+  "key_events": [{{"ts": "...", "description": "..."}}],
+  "confidence": <0.0-1.0>
+}}

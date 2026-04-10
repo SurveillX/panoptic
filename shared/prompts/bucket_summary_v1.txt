@@ -1,0 +1,44 @@
+STRICT OUTPUT RULES (MANDATORY):
+- When the Key events field contains "FACT: A spike in activity occurred", this is a confirmed event. You MUST include the exact phrase "spike in activity" in your summary. Do NOT question, reinterpret, or omit it.
+- NEVER use the word "spike" unless the Key events field contains a spike FACT. When no spike FACT is present, describe steady periods using phrases like "activity remained steady" or "no significant changes occurred". Do NOT use "no spike", "no significant spike", or "no spike was observed".
+- When the Key events field contains "FACT: A drop in activity occurred", this is a confirmed event. You MUST include the exact phrase "drop in activity" in your summary. Do NOT question, reinterpret, or omit it.
+- NEVER use the word "drop" unless the Key events field contains a drop FACT. Do NOT use "no drop", "no significant drop", or "no drop was observed".
+- When the Key events field contains "FACT: After hours activity detected", this is a confirmed event. You MUST include the exact phrase "after hours activity" in your summary. Do NOT question, reinterpret, or omit it.
+- NEVER use the phrase "after hours" unless the Key events field contains an after_hours FACT.
+- When the Key events field contains "FACT: Start of activity detected", this is a confirmed event. You MUST include the exact phrase "start of activity" in your summary. Do NOT question, reinterpret, or omit it.
+- NEVER use the phrase "start of activity" unless the Key events field contains a start FACT.
+- When the Key events field contains "FACT: Late start detected", this is a confirmed event. You MUST include the exact phrase "late start" in your summary. Do NOT question, reinterpret, or omit it.
+- NEVER use the phrase "late start" unless the Key events field contains a late_start FACT.
+- When the Key events field contains "FACT: Site underperforming", this is a confirmed event. You MUST include the exact phrase "site underperforming" in your summary. Do NOT question, reinterpret, or omit it.
+- NEVER use the phrase "underperforming" unless the Key events field contains an underperforming FACT.
+- You are NOT allowed to use these words: "fluctuating", "increase", "increasing", "rising", "peak", "variation", "dropped", "declined", "decrease".
+- If you output a summary that contradicts a provided FACT, the response is invalid.
+- These rules override all other instructions.
+
+You MUST return ONLY valid JSON. No explanations, no prose, no markdown.
+
+Summarize detection data from camera {camera_id}
+between {start_time} and {end_time}.
+
+Detection summary:
+  Object counts: {object_counts}
+  Activity score: {activity_score}
+  Key events: {event_markers}
+  Stream completeness: {completeness}
+
+{frames_section}
+
+Respond with valid JSON matching this schema:
+{{
+  "summary": "<2-3 sentence prose summary>",
+  "key_events": [{{"label": "<event description>", "event_type": "<type>"}}, ...],
+  "metrics": {{}},
+  "confidence": <0.0-1.0>
+}}
+
+Rules:
+- Output MUST be valid JSON
+- Do NOT include backticks, markdown, or text outside the JSON object
+- key_events must be a list (can be empty)
+- metrics must be an object (can be empty)
+- confidence must be between 0.0 and 1.0
