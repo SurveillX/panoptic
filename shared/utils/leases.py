@@ -102,7 +102,7 @@ class ClaimResult:
     """Returned by claim_job on success."""
 
     job_id: str
-    tenant_id: str
+    serial_number: str
     job_type: str
     attempt_count: int   # current attempt number (already incremented)
     max_attempts: int
@@ -146,7 +146,7 @@ def claim_job(
                    updated_at       = now()
              WHERE job_id = :job_id
                AND state  = 'pending'
-         RETURNING job_id, tenant_id, job_type, attempt_count, max_attempts
+         RETURNING job_id, serial_number, job_type, attempt_count, max_attempts
         """),
         {"worker_id": worker_id, "expires_at": lease_expires_at, "job_id": job_id},
     ).fetchone()
@@ -158,7 +158,7 @@ def claim_job(
     _append_job_history(
         conn,
         job_id=row.job_id,
-        tenant_id=row.tenant_id,
+        serial_number=row.serial_number,
         from_state="pending",
         to_state="leased",
         worker_id=worker_id,
@@ -171,7 +171,7 @@ def claim_job(
     )
     return ClaimResult(
         job_id=row.job_id,
-        tenant_id=row.tenant_id,
+        serial_number=row.serial_number,
         job_type=row.job_type,
         attempt_count=row.attempt_count,
         max_attempts=row.max_attempts,
@@ -236,7 +236,7 @@ def mark_running(
              WHERE job_id      = :job_id
                AND lease_owner = :worker_id
                AND state       = 'leased'
-         RETURNING job_id, tenant_id
+         RETURNING job_id, serial_number
         """),
         {"job_id": job_id, "worker_id": worker_id},
     ).fetchone()
@@ -245,7 +245,7 @@ def mark_running(
         _append_job_history(
             conn,
             job_id=row.job_id,
-            tenant_id=row.tenant_id,
+            serial_number=row.serial_number,
             from_state="leased",
             to_state="running",
             worker_id=worker_id,
@@ -304,7 +304,7 @@ def release_job(
                        updated_at       = now()
                  WHERE job_id      = :job_id
                    AND lease_owner = :worker_id
-             RETURNING job_id, tenant_id
+             RETURNING job_id, serial_number
             """),
             {
                 "retry_until": retry_until,
@@ -324,7 +324,7 @@ def release_job(
                        updated_at       = now()
                  WHERE job_id      = :job_id
                    AND lease_owner = :worker_id
-             RETURNING job_id, tenant_id
+             RETURNING job_id, serial_number
             """),
             {
                 "new_state":  new_state,
@@ -347,7 +347,7 @@ def release_job(
     _append_job_history(
         conn,
         job_id=row.job_id,
-        tenant_id=row.tenant_id,
+        serial_number=row.serial_number,
         from_state=None,
         to_state=new_state,
         worker_id=worker_id,
@@ -502,7 +502,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
     with engine.connect() as conn:
         rows = conn.execute(
             text("""
-                SELECT job_id, tenant_id, job_type, attempt_count, max_attempts
+                SELECT job_id, serial_number, job_type, attempt_count, max_attempts
                   FROM vil_jobs
                  WHERE state IN ('leased', 'running', 'retry_wait')
                    AND lease_expires_at < now()
@@ -535,7 +535,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
                 _append_job_history(
                     conn,
                     job_id=row.job_id,
-                    tenant_id=row.tenant_id,
+                    serial_number=row.serial_number,
                     from_state=None,
                     to_state="failed_terminal",
                     worker_id="reclaimer",
@@ -550,7 +550,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
                         r,
                         job_type=row.job_type,
                         job_id=row.job_id,
-                        tenant_id=row.tenant_id,
+                        serial_number=row.serial_number,
                         reason=(
                             f"attempts exhausted "
                             f"({row.attempt_count}/{row.max_attempts})"
@@ -581,7 +581,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
                 _append_job_history(
                     conn,
                     job_id=row.job_id,
-                    tenant_id=row.tenant_id,
+                    serial_number=row.serial_number,
                     from_state=None,
                     to_state="pending",
                     worker_id="reclaimer",
@@ -628,7 +628,7 @@ def _append_job_history(
     conn: Connection,
     *,
     job_id: str,
-    tenant_id: str | None,
+    serial_number: str | None,
     from_state: str | None,
     to_state: str,
     worker_id: str | None,
@@ -642,16 +642,16 @@ def _append_job_history(
     conn.execute(
         text("""
             INSERT INTO vil_job_history
-                (job_id, tenant_id, from_state, to_state, worker_id, note)
+                (job_id, serial_number, from_state, to_state, worker_id, note)
             VALUES
-                (:job_id, :tenant_id, :from_state, :to_state, :worker_id, :note)
+                (:job_id, :serial_number, :from_state, :to_state, :worker_id, :note)
         """),
         {
-            "job_id":     job_id,
-            "tenant_id":  tenant_id or "",
-            "from_state": from_state,
-            "to_state":   to_state,
-            "worker_id":  worker_id,
-            "note":       note,
+            "job_id":        job_id,
+            "serial_number": serial_number or "",
+            "from_state":    from_state,
+            "to_state":      to_state,
+            "worker_id":     worker_id,
+            "note":          note,
         },
     )

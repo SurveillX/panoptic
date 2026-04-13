@@ -157,7 +157,7 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
                 r,
                 job_type="embedding_upsert",
                 job_id=job_id,
-                tenant_id=claim.tenant_id,
+                serial_number=claim.serial_number,
                 reason=last_error or "unknown error",
             )
         except Exception as exc:

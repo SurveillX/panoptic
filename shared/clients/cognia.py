@@ -149,7 +149,7 @@ def ingest_bucket(
     # Step 2: Recompute bucket_id and verify match
     # ------------------------------------------------------------------
     recomputed_id = generate_bucket_id(
-        bucket.tenant_id,
+        bucket.serial_number,
         bucket.camera_id,
         bucket.bucket_start_utc,
         bucket.bucket_end_utc,
@@ -170,7 +170,7 @@ def ingest_bucket(
         # Step 3: Recompute activity_score from activity_components.
         # With camera history: z-score normalization via compute_activity_score.
         # Without history: raw weighted formula clamped to [0, 1] — deterministic.
-        camera_stats = _get_camera_stats(conn, bucket.tenant_id, bucket.camera_id)
+        camera_stats = _get_camera_stats(conn, bucket.serial_number, bucket.camera_id)
         stream_ok = (
             bucket.completeness.detection_coverage >= 0.5
             and not bucket.completeness.aggregator_restart_seen
@@ -195,13 +195,13 @@ def ingest_bucket(
         bucket_row = conn.execute(
             text("""
                 INSERT INTO vil_buckets (
-                    bucket_id, tenant_id, site_id, trailer_id, camera_id,
+                    bucket_id, serial_number, camera_id,
                     bucket_start_utc, bucket_end_utc, bucket_status,
                     schema_version, detection_hash,
                     activity_score, activity_components, object_counts,
                     keyframe_candidates, event_markers, completeness
                 ) VALUES (
-                    :bucket_id, :tenant_id, :site_id, :trailer_id, :camera_id,
+                    :bucket_id, :serial_number, :camera_id,
                     :bucket_start_utc, :bucket_end_utc, :bucket_status,
                     :schema_version, :detection_hash,
                     :activity_score, CAST(:activity_components AS jsonb),
@@ -239,10 +239,10 @@ def ingest_bucket(
         job_row = conn.execute(
             text("""
                 INSERT INTO vil_jobs (
-                    job_id, job_key, tenant_id, job_type,
+                    job_id, job_key, serial_number, job_type,
                     priority, state, attempt_count, max_attempts, payload
                 ) VALUES (
-                    :job_id, :job_key, :tenant_id, 'bucket_summary',
+                    :job_id, :job_key, :serial_number, 'bucket_summary',
                     'normal', 'pending', 0, :max_attempts, CAST(:payload AS jsonb)
                 )
                 ON CONFLICT (job_key) DO NOTHING
@@ -251,7 +251,7 @@ def ingest_bucket(
             {
                 "job_id":       new_job_id,
                 "job_key":      job_key,
-                "tenant_id":    bucket.tenant_id,
+                "serial_number":    bucket.serial_number,
                 "max_attempts": max_attempts,
                 "payload":      _job_payload_json(bucket, model_profile, prompt_version),
             },
@@ -274,7 +274,7 @@ def ingest_bucket(
                 r,
                 job_type="bucket_summary",
                 job_id=returned_job_id,
-                tenant_id=bucket.tenant_id,
+                serial_number=bucket.serial_number,
                 priority="normal",
             )
             print("ENQUEUED SUMMARY JOB:", returned_job_id)
@@ -304,7 +304,7 @@ def ingest_bucket(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_camera_stats(conn, tenant_id: str, camera_id: str) -> CameraStats | None:
+def _get_camera_stats(conn, serial_number: str, camera_id: str) -> CameraStats | None:
     """
     Derive rolling CameraStats from the most recent buckets for this camera.
 
@@ -315,12 +315,12 @@ def _get_camera_stats(conn, tenant_id: str, camera_id: str) -> CameraStats | Non
         text("""
             SELECT activity_components
               FROM vil_buckets
-             WHERE tenant_id = :tenant_id
+             WHERE serial_number = :serial_number
                AND camera_id = :camera_id
              ORDER BY bucket_start_utc DESC
              LIMIT :lim
         """),
-        {"tenant_id": tenant_id, "camera_id": camera_id, "lim": _CAMERA_STATS_LOOKBACK},
+        {"serial_number": serial_number, "camera_id": camera_id, "lim": _CAMERA_STATS_LOOKBACK},
     ).fetchall()
 
     if not rows:
@@ -395,9 +395,7 @@ def _bucket_params(bucket: BucketRecord, activity_score: float) -> dict:
     """Parameter dict for the vil_buckets INSERT."""
     return {
         "bucket_id":          bucket.bucket_id,
-        "tenant_id":          bucket.tenant_id,
-        "site_id":            bucket.site_id,
-        "trailer_id":         bucket.trailer_id,
+        "serial_number":          bucket.serial_number,
         "camera_id":          bucket.camera_id,
         "bucket_start_utc":   bucket.bucket_start_utc.isoformat(),
         "bucket_end_utc":     bucket.bucket_end_utc.isoformat(),
@@ -445,9 +443,7 @@ def _job_payload_json(
     """
     return json.dumps({
         "bucket_id":      bucket.bucket_id,
-        "tenant_id":      bucket.tenant_id,
-        "site_id":        bucket.site_id,
-        "trailer_id":     bucket.trailer_id,
+        "serial_number":      bucket.serial_number,
         "camera_id":      bucket.camera_id,
         "model_profile":  model_profile,
         "prompt_version": prompt_version,

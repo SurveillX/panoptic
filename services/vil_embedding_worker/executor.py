@@ -58,7 +58,7 @@ def run_embedding_job(
     # ------------------------------------------------------------------
     row = conn.execute(
         text("""
-            SELECT summary_id, tenant_id, level, scope_id,
+            SELECT summary_id, serial_number, level, scope_id,
                    start_time, end_time, summary, key_events, confidence,
                    embedding_status
               FROM vil_summaries
@@ -120,7 +120,7 @@ def run_embedding_job(
     # Idempotent: safe to retry if commit fails.
     # ------------------------------------------------------------------
     qdrant_payload = {
-        "tenant_id":  row.tenant_id,
+        "serial_number":  row.serial_number,
         "level":      row.level,
         "scope_id":   row.scope_id,
         "start_time": row.start_time.isoformat() if hasattr(row.start_time, "isoformat") else str(row.start_time),

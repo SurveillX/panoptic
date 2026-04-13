@@ -2,8 +2,8 @@
 Summary record schema — authoritative output of the Summary Agent.
 
 summary_id is deterministic: sha256 of a sorted-key JSON payload that includes
-tenant_id, so the same scope/window/children across different tenants always
-produces different IDs.
+serial_number, so the same scope/window/children across different trailers
+always produces different IDs.
 
 Search MUST filter is_latest=True to avoid returning superseded versions.
 """
@@ -38,7 +38,7 @@ class SummaryCoverage(BaseModel):
 
 
 def generate_summary_id(
-    tenant_id: str,
+    serial_number: str,
     level: str,
     scope_id: str,
     window_start: datetime,
@@ -51,9 +51,9 @@ def generate_summary_id(
     """
     Deterministic summary ID.
 
-    tenant_id is the first logical discriminator — identical scope/window/
-    children across tenants produces different IDs.  sort_keys=True ensures
-    canonical encoding regardless of insertion order.
+    scope_id encodes the composite camera identity (serial_number:camera_id).
+    serial_number is included explicitly so identical scope/window/children
+    across trailers always produces different IDs.
     """
     payload = json.dumps(
         {
@@ -62,8 +62,8 @@ def generate_summary_id(
             "model_profile": model_profile,
             "prompt_version": prompt_version,
             "scope_id": scope_id,
+            "serial_number": serial_number,
             "summary_schema_version": summary_schema_version,
-            "tenant_id": tenant_id,
             "window_end": window_end.isoformat(),
             "window_start": window_start.isoformat(),
         },
@@ -92,7 +92,7 @@ class SummaryRecord(BaseModel):
     model_config = ConfigDict(strict=True)
 
     summary_id: str
-    tenant_id: str
+    serial_number: str
     level: Literal["camera", "hour", "day", "site"]
     scope_id: str
 
@@ -107,6 +107,7 @@ class SummaryRecord(BaseModel):
 
     summary_mode: Literal["full", "partial", "metadata_only"]
     frames_used: int = Field(ge=0)
+    frame_timestamps: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
 
     embedding_status: Literal["pending", "success", "failed"] = "pending"

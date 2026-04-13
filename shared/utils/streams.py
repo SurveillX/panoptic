@@ -86,7 +86,7 @@ class StreamMessage:
 
     job_id: str
     job_type: str
-    tenant_id: str
+    serial_number: str
     priority: str
 
 
@@ -127,7 +127,7 @@ def enqueue_job(
     *,
     job_type: str,
     job_id: str,
-    tenant_id: str,
+    serial_number: str,
     priority: str = "normal",
 ) -> str:
     """
@@ -146,7 +146,7 @@ def enqueue_job(
         {
             "job_id":   job_id,
             "job_type": job_type,
-            "tenant_id": tenant_id,
+            "serial_number": serial_number,
             "priority": priority,
         },
         maxlen=_STREAM_MAXLEN,
@@ -161,7 +161,7 @@ def enqueue_dlq(
     *,
     job_type: str,
     job_id: str,
-    tenant_id: str,
+    serial_number: str,
     reason: str,
 ) -> str:
     """
@@ -175,7 +175,7 @@ def enqueue_dlq(
         {
             "job_id":   job_id,
             "job_type": job_type,
-            "tenant_id": tenant_id,
+            "serial_number": serial_number,
             "reason":   reason[:1000],  # cap to avoid bloating Redis
         },
         maxlen=10_000,
@@ -237,7 +237,7 @@ def consume_next(
         group=group,
         job_id=fields["job_id"],
         job_type=fields["job_type"],
-        tenant_id=fields["tenant_id"],
+        serial_number=fields.get("serial_number", fields.get("tenant_id", "")),
         priority=fields.get("priority", "normal"),
     )
 

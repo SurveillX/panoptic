@@ -47,9 +47,7 @@ def _round_for_hash(obj):
 
 
 def _build_bucket(
-    tenant_id: str,
-    site_id: str,
-    trailer_id: str,
+    serial_number: str,
     camera_id: str,
     start_utc: datetime,
     end_utc: datetime,
@@ -77,7 +75,7 @@ def _build_bucket(
     ).hexdigest()
 
     bucket_id = generate_bucket_id(
-        tenant_id=tenant_id,
+        serial_number=serial_number,
         camera_id=camera_id,
         start_utc=start_utc,
         end_utc=end_utc,
@@ -95,9 +93,7 @@ def _build_bucket(
 
     return {
         "bucket_id": bucket_id,
-        "tenant_id": tenant_id,
-        "site_id": site_id,
-        "trailer_id": trailer_id,
+        "serial_number": serial_number,
         "camera_id": camera_id,
         "bucket_start_utc": start_utc.isoformat(),
         "bucket_end_utc": end_utc.isoformat(),
@@ -147,7 +143,7 @@ def _cognia_stats(
 # ---------------------------------------------------------------------------
 
 def scenario_steady(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """Stable activity: moderate mean_count, low variance, no anomaly."""
@@ -162,7 +158,7 @@ def scenario_steady(
             dc = round(random.uniform(0.7, 0.9), 2)
             td = int(mc * 15)
             buckets.append(_build_bucket(
-                tenant_id, site_id, trailer_id, camera_id, start, end,
+                serial_number, camera_id, start, end,
                 object_counts={"person": random.randint(3, 8), "vehicle": random.randint(0, 2)},
                 cognia_stats=_cognia_stats(mc, sd, dc, td),
                 event_markers=[],
@@ -172,7 +168,7 @@ def scenario_steady(
 
 
 def scenario_idle(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """Idle site: near-zero detections, low duty cycle."""
@@ -187,7 +183,7 @@ def scenario_idle(
             dc = round(random.uniform(0.0, 0.1), 2)
             td = random.randint(0, 2)
             buckets.append(_build_bucket(
-                tenant_id, site_id, trailer_id, camera_id, start, end,
+                serial_number, camera_id, start, end,
                 object_counts={},
                 cognia_stats=_cognia_stats(mc, sd, dc, td),
                 event_markers=[],
@@ -197,7 +193,7 @@ def scenario_idle(
 
 
 def scenario_spike(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """Normal activity with one spike + one drop bucket per hour."""
@@ -246,7 +242,7 @@ def scenario_spike(
                 markers = []
                 stats = _cognia_stats(mc, sd, dc, td)
             buckets.append(_build_bucket(
-                tenant_id, site_id, trailer_id, camera_id, start, end,
+                serial_number, camera_id, start, end,
                 object_counts=oc,
                 cognia_stats=stats,
                 event_markers=markers,
@@ -256,7 +252,7 @@ def scenario_spike(
 
 
 def scenario_anomaly(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """Moderate counts but persistent anomaly flag — unusual pattern detected."""
@@ -271,7 +267,7 @@ def scenario_anomaly(
             dc = round(random.uniform(0.5, 0.8), 2)
             td = int(mc * 15)
             buckets.append(_build_bucket(
-                tenant_id, site_id, trailer_id, camera_id, start, end,
+                serial_number, camera_id, start, end,
                 object_counts={"person": random.randint(5, 10)},
                 cognia_stats=_cognia_stats(
                     mc, sd, dc, td,
@@ -285,7 +281,7 @@ def scenario_anomaly(
 
 
 def scenario_after_hours(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """Activity during night hours (22:00–05:00) with after_hours markers."""
@@ -310,7 +306,7 @@ def scenario_after_hours(
             }]
             stats = _cognia_stats(mc, sd, dc, td)
             buckets.append(_build_bucket(
-                tenant_id, site_id, trailer_id, camera_id, start, end,
+                serial_number, camera_id, start, end,
                 object_counts=oc,
                 cognia_stats=stats,
                 event_markers=markers,
@@ -320,7 +316,7 @@ def scenario_after_hours(
 
 
 def scenario_after_hours_drop(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """After-hours spike followed by immediate drop — both signals on drop bucket."""
@@ -370,7 +366,7 @@ def scenario_after_hours_drop(
                 ]
                 stats = _cognia_stats(mc, sd, dc, td)
             buckets.append(_build_bucket(
-                tenant_id, site_id, trailer_id, camera_id, start, end,
+                serial_number, camera_id, start, end,
                 object_counts=oc,
                 cognia_stats=stats,
                 event_markers=markers,
@@ -380,7 +376,7 @@ def scenario_after_hours_drop(
 
 
 def scenario_workday(
-    tenant_id: str, site_id: str, trailer_id: str, camera_id: str,
+    serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
 ) -> list[dict]:
     """
@@ -438,7 +434,7 @@ def scenario_workday(
         stats = _cognia_stats(mc, sd, dc, td,
                               anomaly_score=anomaly_score, anomaly_flag=anomaly_flag)
         buckets.append(_build_bucket(
-            tenant_id, site_id, trailer_id, camera_id, start, end,
+            serial_number, camera_id, start, end,
             object_counts=oc, cognia_stats=stats,
             event_markers=markers, completeness=_default_completeness(),
         ))
@@ -629,9 +625,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Replay synthetic buckets")
     parser.add_argument("--scenario", required=True, choices=SCENARIOS.keys())
     parser.add_argument("--hours", type=int, default=2)
-    parser.add_argument("--tenant-id", default="demo")
-    parser.add_argument("--site-id", default="site-01")
-    parser.add_argument("--trailer-id", default="trailer-01")
+    parser.add_argument("--serial-number", default="1422725077375")
     parser.add_argument("--camera-id", default="cam-01")
     parser.add_argument("--model-profile", default="default")
     parser.add_argument("--prompt-version", default="v1")
@@ -657,13 +651,13 @@ def main() -> None:
 
     gen = SCENARIOS[args.scenario]
     buckets = gen(
-        args.tenant_id, args.site_id, args.trailer_id, args.camera_id,
+        args.serial_number, args.camera_id,
         base_utc, args.hours,
     )
 
     log.info(
         "replaying %d buckets: scenario=%s hours=%d tenant=%s camera=%s base=%s",
-        len(buckets), args.scenario, args.hours, args.tenant_id,
+        len(buckets), args.scenario, args.hours, args.serial_number,
         args.camera_id, base_utc.isoformat(),
     )
 

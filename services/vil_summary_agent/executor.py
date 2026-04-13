@@ -24,6 +24,7 @@ from typing import Literal
 from pydantic import ValidationError
 from sqlalchemy import text
 
+from shared.clients.continuum import ContinuumClient, ContinuumFrameResponse, ContinuumNetworkError
 from shared.clients.vlm import VLMClient, VLMAuthError, VLMError, VLMNetworkError
 
 from services.vil_summary_agent.summary_db import (
@@ -61,7 +62,7 @@ class ExecutionResult:
     summary_id: str              # empty string on failed_terminal / retry_wait
     embedding_job_id: str | None  # new UUID; None if duplicate or not applicable
     rollup_job_id: str | None     # new UUID; None if not triggered or duplicate
-    rollup_tenant_id: str | None  # mirrors tenant_id when rollup_job_id is set
+    rollup_serial_number: str | None  # mirrors serial_number when rollup_job_id is set
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +99,7 @@ def run_bucket_summary(
     attempt_count: int,
     keyframe_client=None,
     vlm_client: VLMClient | None = None,
+    continuum_client: ContinuumClient | None = None,
 ) -> ExecutionResult:
     """
     Execute a bucket_summary job.
@@ -105,20 +107,26 @@ def run_bucket_summary(
     All DB writes occur within the caller's open connection/transaction.
     No commit is issued here; the worker commits after release_job + lease check.
 
+    Frame source routing (decided at worker startup, not per-job):
+      continuum_client is not None → Continuum path (JPEG bytes → base64 data URI)
+      keyframe_client is not None  → KeyframeClient path (URI references)
+      both None                    → no frames, metadata_only
+
     Parameters
     ----------
-    conn           : open SQLAlchemy connection (transaction in progress)
-    payload        : vil_jobs.payload dict
-    worker_id      : worker identity (for logging)
-    attempt_count  : current attempt number from ClaimResult
-    keyframe_client: KeyframeClient | None — None disables frame fetching
-    vlm_client     : VLMClient | None — None falls back to call_llm_stub
+    conn             : open SQLAlchemy connection (transaction in progress)
+    payload          : vil_jobs.payload dict
+    worker_id        : worker identity (for logging)
+    attempt_count    : current attempt number from ClaimResult
+    keyframe_client  : KeyframeClient | None
+    vlm_client       : VLMClient | None — None falls back to call_llm_stub
+    continuum_client : ContinuumClient | None — takes precedence over keyframe_client
 
     Returns an ExecutionResult describing what happened and which post-commit
     enqueues the worker should perform.
     """
     bucket_id     = payload["bucket_id"]
-    tenant_id     = payload["tenant_id"]
+    serial_number     = payload["serial_number"]
     camera_id     = payload["camera_id"]
     model_profile = payload["model_profile"]
     prompt_version = payload["prompt_version"]
@@ -141,24 +149,48 @@ def run_bucket_summary(
             summary_id="",
             embedding_job_id=None,
             rollup_job_id=None,
-            rollup_tenant_id=None,
+            rollup_serial_number=None,
         )
 
     # ------------------------------------------------------------------
     # Steps 3–7: Resolve candidates, fetch frames, apply quality filter
+    #
+    # Frame source routing:
+    #   continuum_client set → Continuum path (base64 data URIs)
+    #   keyframe_client set  → KeyframeClient path (URI references)
+    #   both None            → no frames
     # ------------------------------------------------------------------
     candidates = _resolve_candidates(bucket_row)
     usable_frames: list[FrameResponse] = []
-    if keyframe_client is not None and candidates:
+    continuum_frames: list[ContinuumFrameResponse] = []
+
+    if continuum_client is not None and candidates:
+        continuum_frames = _fetch_continuum_frames(
+            continuum_client, serial_number, camera_id, candidates
+        )
+    elif keyframe_client is not None and candidates:
         usable_frames = _fetch_usable_frames(keyframe_client, camera_id, candidates)
-    frames_used = len(usable_frames)
+
+    frames_used = len(continuum_frames) or len(usable_frames)
     summary_mode = _decide_summary_mode(frames_used)
+
+    # Collect timestamps of frames actually fetched (for later retrieval)
+    if continuum_frames:
+        frame_timestamps = [f.requested_ts.isoformat() for f in continuum_frames]
+    elif usable_frames:
+        frame_timestamps = [f.actual_ts.isoformat() for f in usable_frames]
+    else:
+        frame_timestamps = []
 
     # ------------------------------------------------------------------
     # Step 8: Build prompt
     # ------------------------------------------------------------------
-    prompt = _build_prompt(bucket_row, usable_frames)
-    frame_uris = [f.uri for f in usable_frames]
+    if continuum_frames:
+        prompt = _build_prompt(bucket_row, [])  # no FrameResponse objects
+        frame_uris = [f.data_uri for f in continuum_frames]
+    else:
+        prompt = _build_prompt(bucket_row, usable_frames)
+        frame_uris = [f.uri for f in usable_frames]
 
     # ------------------------------------------------------------------
     # Steps 9–10: Call vLLM (or stub) + validate; repair on first failure
@@ -212,9 +244,9 @@ def run_bucket_summary(
 
     child_set_hash = compute_child_set_hash([bucket_id])
     summary_id = generate_summary_id(
-        tenant_id=tenant_id,
+        serial_number=serial_number,
         level="camera",
-        scope_id=camera_id,
+        scope_id=f"{serial_number}:{camera_id}",
         window_start=bucket_start,
         window_end=bucket_end,
         child_set_hash=child_set_hash,
@@ -225,9 +257,9 @@ def run_bucket_summary(
 
     record = SummaryRecord(
         summary_id=summary_id,
-        tenant_id=tenant_id,
+        serial_number=serial_number,
         level="camera",
-        scope_id=camera_id,
+        scope_id=f"{serial_number}:{camera_id}",
         start_time=bucket_start,
         end_time=bucket_end,
         summary=llm_output.summary,
@@ -241,6 +273,7 @@ def run_bucket_summary(
         ),
         summary_mode=summary_mode,
         frames_used=frames_used,
+        frame_timestamps=frame_timestamps,
         confidence=llm_output.confidence,
         embedding_status="pending",
         version=1,          # overridden by upsert_summary's version logic
@@ -263,15 +296,15 @@ def run_bucket_summary(
     embedding_job_id = insert_embedding_job(
         conn,
         summary_id=summary_id,
-        tenant_id=tenant_id,
+        serial_number=serial_number,
     )
 
     # ------------------------------------------------------------------
     # Step 13: Upsert rollup state; insert rollup job if coverage >= 0.5
     # ------------------------------------------------------------------
-    rollup_job_id, rollup_tenant_id = upsert_rollup_state_and_maybe_enqueue(
+    rollup_job_id, rollup_serial_number = upsert_rollup_state_and_maybe_enqueue(
         conn,
-        tenant_id=tenant_id,
+        serial_number=serial_number,
         camera_id=camera_id,
         bucket_start_utc=bucket_start,
         bucket_end_utc=bucket_end,
@@ -298,7 +331,7 @@ def run_bucket_summary(
         summary_id=summary_id,
         embedding_job_id=embedding_job_id,
         rollup_job_id=rollup_job_id,
-        rollup_tenant_id=rollup_tenant_id,
+        rollup_serial_number=rollup_serial_number,
     )
 
 
@@ -352,6 +385,41 @@ def _fetch_usable_frames(client, camera_id: str, candidates: list) -> list[Frame
             continue
         usable.append(frame)
     return usable
+
+
+def _fetch_continuum_frames(
+    client: ContinuumClient,
+    serial_number: str,
+    camera_id: str,
+    candidates: list,
+) -> list[ContinuumFrameResponse]:
+    """
+    Fetch frames from the trailer's Continuum endpoint for each candidate timestamp.
+
+    No quality filtering for v1 — Continuum provides no quality metadata.
+    All successfully fetched frames are treated as usable.
+
+    - 404 (None return): silent skip.
+    - ContinuumNetworkError: logged as warning, treated as miss.
+    """
+    frames = []
+    for ts, label in candidates:
+        try:
+            frame = client.fetch_frame(serial_number, camera_id, ts)
+        except ContinuumNetworkError as exc:
+            log.warning(
+                "continuum fetch error label=%s sn=%s cam=%s: %s",
+                label, serial_number, camera_id, exc,
+            )
+            continue
+        if frame is None:
+            log.debug(
+                "continuum miss label=%s sn=%s cam=%s ts=%s",
+                label, serial_number, camera_id, ts.isoformat(),
+            )
+            continue
+        frames.append(frame)
+    return frames
 
 
 def _decide_summary_mode(usable_count: int, target: int = _TARGET_FRAMES) -> str:

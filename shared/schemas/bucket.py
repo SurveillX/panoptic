@@ -2,8 +2,8 @@
 Bucket record schema — canonical finalized detection window from Cognia.
 
 bucket_id is deterministic: sha256 of a sorted-key JSON payload that includes
-tenant_id, so the same camera/window across different tenants always produces
-different IDs.
+serial_number, so the same camera/window across different trailers always
+produces different IDs.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ class BucketCompleteness(BaseModel):
 
 
 def generate_bucket_id(
-    tenant_id: str,
+    serial_number: str,
     camera_id: str,
     start_utc: datetime,
     end_utc: datetime,
@@ -63,9 +63,8 @@ def generate_bucket_id(
     Deterministic bucket ID.
 
     Uses sorted-key JSON serialisation so the canonical encoding is stable
-    across Python versions and call order.  tenant_id is the first logical
-    discriminator — identical camera/window/hash across tenants produces
-    different IDs.
+    across Python versions and call order.  The composite (serial_number,
+    camera_id) is the unique camera identity.
     """
     payload = json.dumps(
         {
@@ -73,8 +72,8 @@ def generate_bucket_id(
             "detection_hash": detection_hash,
             "end_utc": end_utc.isoformat(),
             "schema_version": schema_version,
+            "serial_number": serial_number,
             "start_utc": start_utc.isoformat(),
-            "tenant_id": tenant_id,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -99,9 +98,7 @@ class BucketRecord(BaseModel):
     model_config = ConfigDict(strict=True)
 
     bucket_id: str
-    tenant_id: str
-    site_id: str
-    trailer_id: str
+    serial_number: str
     camera_id: str
 
     bucket_start_utc: datetime

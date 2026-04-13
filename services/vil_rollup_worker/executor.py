@@ -2,7 +2,7 @@
 rollup_summary job executor — L2 (hour-level) summaries.
 
 Steps:
-  1. Load payload (tenant_id, camera_id, window_start/end, child_ids, ...).
+  1. Load payload (serial_number, camera_id, window_start/end, child_ids, ...).
   2. Fetch child camera-level summaries ordered by start_time.
   3. Coverage check:
        == 0             → failed_terminal
@@ -62,7 +62,7 @@ def run_rollup_job(
     All DB writes occur within the caller's open connection/transaction.
     No commit is issued here; the worker commits after release_job + lease check.
     """
-    tenant_id      = payload["tenant_id"]
+    serial_number      = payload["serial_number"]
     camera_id      = payload["camera_id"]
     child_ids      = payload["child_ids"]
     model_profile  = payload["model_profile"]
@@ -156,9 +156,9 @@ def run_rollup_job(
     now = datetime.now(timezone.utc)
     child_set_hash = compute_child_set_hash(sorted(child_ids))
     summary_id = generate_summary_id(
-        tenant_id=tenant_id,
+        serial_number=serial_number,
         level="hour",
-        scope_id=camera_id,
+        scope_id=f"{serial_number}:{camera_id}",
         window_start=window_start,
         window_end=window_end,
         child_set_hash=child_set_hash,
@@ -175,9 +175,9 @@ def run_rollup_job(
 
     record = SummaryRecord(
         summary_id=summary_id,
-        tenant_id=tenant_id,
+        serial_number=serial_number,
         level="hour",
-        scope_id=camera_id,
+        scope_id=f"{serial_number}:{camera_id}",
         start_time=window_start,
         end_time=window_end,
         summary=llm_output.summary,
@@ -209,7 +209,7 @@ def run_rollup_job(
     # upsert_summary uses ON CONFLICT — no pre-check needed.
     # ------------------------------------------------------------------
     upsert_summary(conn, record)
-    embedding_job_id = insert_embedding_job(conn, summary_id=summary_id, tenant_id=tenant_id)
+    embedding_job_id = insert_embedding_job(conn, summary_id=summary_id, serial_number=serial_number)
 
     # ------------------------------------------------------------------
     # Step 9: Determine job state

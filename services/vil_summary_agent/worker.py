@@ -33,6 +33,7 @@ from shared.utils.leases import (
     generate_worker_id,
     release_job,
 )
+from shared.clients.continuum import CONTINUUM_BASE_URL_TEMPLATE, get_continuum_client
 from shared.clients.keyframe import KEYFRAME_BASE_URL, KEYFRAME_TOKEN, get_keyframe_client
 from shared.clients.vlm import VLLM_BASE_URL, get_vlm_client
 from shared.utils.redis_client import get_redis_client
@@ -55,7 +56,7 @@ DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
 # Message processor
 # ---------------------------------------------------------------------------
 
-def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client) -> bool:
+def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client, continuum_client=None) -> bool:
     """
     Process one stream message end-to-end.
 
@@ -109,6 +110,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
                     attempt_count=claim.attempt_count,
                     keyframe_client=keyframe_client,
                     vlm_client=vlm_client,
+                    continuum_client=continuum_client,
                 )
             except Exception as exc:
                 log.exception(
@@ -125,7 +127,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
                     summary_id="",
                     embedding_job_id=None,
                     rollup_job_id=None,
-                    rollup_tenant_id=None,
+                    rollup_serial_number=None,
                 )
 
             # Step 14 (continued): release_job — all within same transaction
@@ -183,7 +185,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
                     r,
                     job_type="embedding_upsert",
                     job_id=exec_result.embedding_job_id,
-                    tenant_id=claim.tenant_id,
+                    serial_number=claim.serial_number,
                     priority="normal",
                 )
             except Exception as exc:
@@ -200,7 +202,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
                     r,
                     job_type="rollup_summary",
                     job_id=exec_result.rollup_job_id,
-                    tenant_id=exec_result.rollup_tenant_id,
+                    serial_number=exec_result.rollup_serial_number,
                     priority="normal",
                 )
             except Exception as exc:
@@ -216,7 +218,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
                 r,
                 job_type="bucket_summary",
                 job_id=job_id,
-                tenant_id=claim.tenant_id,
+                serial_number=claim.serial_number,
                 reason=exec_result.last_error or "unknown error",
             )
         except Exception as exc:
@@ -240,7 +242,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
 # Worker loop
 # ---------------------------------------------------------------------------
 
-def run_worker(engine, r, worker_id: str, keyframe_client, vlm_client) -> None:
+def run_worker(engine, r, worker_id: str, keyframe_client, vlm_client, continuum_client=None) -> None:
     """
     Main worker loop: block-reads and processes bucket_summary jobs indefinitely.
 
@@ -266,7 +268,7 @@ def run_worker(engine, r, worker_id: str, keyframe_client, vlm_client) -> None:
         print("WORKER received job:", msg.job_id)
         log.debug("worker: received job_id=%s", msg.job_id)
         try:
-            _process_message(engine, r, msg, worker_id, keyframe_client, vlm_client)
+            _process_message(engine, r, msg, worker_id, keyframe_client, vlm_client, continuum_client)
         except Exception as exc:
             log.exception(
                 "worker: unhandled error for job_id=%s — message stays in PEL: %s",
@@ -308,10 +310,17 @@ def main() -> None:
             "all summaries will use call_llm_stub"
         )
 
+    # Continuum client takes precedence over KeyframeClient when set
+    if CONTINUUM_BASE_URL_TEMPLATE and "{serial_number}" in CONTINUUM_BASE_URL_TEMPLATE:
+        continuum_client = get_continuum_client()
+        log.info("Continuum configured: %s", CONTINUUM_BASE_URL_TEMPLATE)
+    else:
+        continuum_client = None
+
     bootstrap_streams(r)
     worker_id = generate_worker_id()
 
-    run_worker(engine, r, worker_id, keyframe_client, vlm_client)
+    run_worker(engine, r, worker_id, keyframe_client, vlm_client, continuum_client)
 
 
 if __name__ == "__main__":

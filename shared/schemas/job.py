@@ -84,7 +84,7 @@ class JobRecord(BaseModel):
 
     job_id: str
     job_key: str
-    tenant_id: str
+    serial_number: str
     job_type: JobType
     priority: JobPriority = "normal"
 
@@ -114,7 +114,7 @@ class JobCreate(BaseModel):
     model_config = ConfigDict(strict=True)
 
     job_key: str
-    tenant_id: str
+    serial_number: str
     job_type: JobType
     priority: JobPriority = "normal"
     max_attempts: int = Field(ge=1, default=3)

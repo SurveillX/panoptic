@@ -44,9 +44,7 @@ class VilBucket(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     bucket_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
-    site_id: Mapped[str] = mapped_column(Text, nullable=False)
-    trailer_id: Mapped[str] = mapped_column(Text, nullable=False)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
     camera_id: Mapped[str] = mapped_column(Text, nullable=False)
 
     bucket_start_utc: Mapped[datetime] = mapped_column(
@@ -78,8 +76,8 @@ class VilBucket(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_buckets_tenant_camera_start", "tenant_id", "camera_id", "bucket_start_utc"),
-        Index("ix_vil_buckets_tenant_start_desc", "tenant_id", "bucket_start_utc"),
+        Index("ix_vil_buckets_sn_camera_start", "serial_number", "camera_id", "bucket_start_utc"),
+        Index("ix_vil_buckets_sn_start_desc", "serial_number", "bucket_start_utc"),
     )
 
 
@@ -100,7 +98,7 @@ class VilJob(Base):
     )
     # Uniqueness on job_key enforces at-most-one-active-job-per-logical-operation.
     job_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
     job_type: Mapped[str] = mapped_column(Text, nullable=False)
     priority: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'normal'"))
 
@@ -127,7 +125,7 @@ class VilJob(Base):
 
     __table_args__ = (
         Index("ix_vil_jobs_state_lease", "state", "lease_expires_at"),
-        Index("ix_vil_jobs_tenant_state", "tenant_id", "state"),
+        Index("ix_vil_jobs_sn_state", "serial_number", "state"),
         Index("ix_vil_jobs_job_id", "job_id"),
     )
 
@@ -143,7 +141,7 @@ class VilJobHistory(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     # Not a FK — history must survive job deletion / archival.
     job_id: Mapped[str] = mapped_column(Text, nullable=False)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
     from_state: Mapped[str | None] = mapped_column(Text, nullable=True)  # NULL for initial insert
     to_state: Mapped[str] = mapped_column(Text, nullable=False)
     worker_id: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -154,7 +152,7 @@ class VilJobHistory(Base):
 
     __table_args__ = (
         Index("ix_vil_job_history_job_id", "job_id"),
-        Index("ix_vil_job_history_tenant_created", "tenant_id", "created_at"),
+        Index("ix_vil_job_history_sn_created", "serial_number", "created_at"),
     )
 
 
@@ -168,7 +166,7 @@ class VilSummary(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     summary_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
     level: Mapped[str] = mapped_column(Text, nullable=False)
     scope_id: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -186,6 +184,9 @@ class VilSummary(Base):
 
     summary_mode: Mapped[str] = mapped_column(Text, nullable=False)
     frames_used: Mapped[int] = mapped_column(Integer, nullable=False)
+    frame_timestamps: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     confidence: Mapped[float] = mapped_column(Float, nullable=False)
 
     embedding_status: Mapped[str] = mapped_column(
@@ -214,11 +215,11 @@ class VilSummary(Base):
 
     __table_args__ = (
         Index(
-            "ix_vil_summaries_tenant_level_scope_latest",
-            "tenant_id", "level", "scope_id", "is_latest",
+            "ix_vil_summaries_sn_level_scope_latest",
+            "serial_number", "level", "scope_id", "is_latest",
         ),
         Index("ix_vil_summaries_embedding_status", "embedding_status"),
-        Index("ix_vil_summaries_tenant_start_desc", "tenant_id", "start_time"),
+        Index("ix_vil_summaries_sn_start_desc", "serial_number", "start_time"),
     )
 
 
@@ -232,7 +233,7 @@ class VilRollupState(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     parent_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
     level: Mapped[str] = mapped_column(Text, nullable=False)
     window_start: Mapped[datetime] = mapped_column(Text, nullable=False)
     window_end: Mapped[datetime] = mapped_column(Text, nullable=False)
@@ -253,8 +254,8 @@ class VilRollupState(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_rollup_state_tenant_level_start", "tenant_id", "level", "window_start"),
-        Index("ix_vil_rollup_state_tenant_stale", "tenant_id", "stale"),
+        Index("ix_vil_rollup_state_sn_level_start", "serial_number", "level", "window_start"),
+        Index("ix_vil_rollup_state_sn_stale", "serial_number", "stale"),
     )
 
 
@@ -268,7 +269,7 @@ class VilEmbeddingBacklog(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     summary_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    tenant_id: Mapped[str] = mapped_column(Text, nullable=False)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_attempt_at: Mapped[datetime | None] = mapped_column(Text, nullable=True)
     next_attempt_at: Mapped[datetime] = mapped_column(
@@ -280,5 +281,5 @@ class VilEmbeddingBacklog(Base):
 
     __table_args__ = (
         Index("ix_vil_embedding_backlog_next_attempt", "next_attempt_at"),
-        Index("ix_vil_embedding_backlog_tenant_next", "tenant_id", "next_attempt_at"),
+        Index("ix_vil_embedding_backlog_sn_next", "serial_number", "next_attempt_at"),
     )

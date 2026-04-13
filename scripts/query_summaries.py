@@ -32,8 +32,19 @@ def _expand_query(text: str) -> str:
     return text
 
 
-def _build_filter(text: str) -> dict | None:
-    """Build a Qdrant filter matching normalized labels in key_events_labels."""
+def _build_filter(
+    text: str,
+    serial_number: str | None = None,
+    camera_id: str | None = None,
+) -> dict | None:
+    """Build a Qdrant filter matching normalized labels in key_events_labels.
+
+    Optional identity filters:
+      --serial-number only:  filter on serial_number field
+      --camera-id only:      convenience filter on scope_id containing that
+                             camera_id — non-unique, may match across trailers
+      both provided:         exact composite match on scope_id == "{sn}:{cam}"
+    """
     query_lower = text.lower()
     conditions = []
     for keyword, canonical in SIGNAL_MAP.items():
@@ -42,11 +53,30 @@ def _build_filter(text: str) -> dict | None:
                 "key": "key_events_labels",
                 "match": {"any": [canonical]},
             })
+
+    # Identity filters
+    if serial_number and camera_id:
+        # Exact composite match
+        conditions.append({
+            "key": "scope_id",
+            "match": {"value": f"{serial_number}:{camera_id}"},
+        })
+    elif serial_number:
+        conditions.append({
+            "key": "serial_number",
+            "match": {"value": serial_number},
+        })
+    elif camera_id:
+        # Non-unique convenience filter — may match across multiple trailers
+        conditions.append({
+            "key": "scope_id",
+            "match": {"text": camera_id},
+        })
+
     if not conditions:
         return None
     if len(conditions) == 1:
         return {"must": conditions}
-    # Multiple signals: require all
     return {"must": conditions}
 
 
@@ -64,14 +94,19 @@ def _search_qdrant(vector, top_k: int, qdrant_filter: dict | None) -> list:
     return resp.json().get("result", [])
 
 
-def query_summaries(text: str, top_k: int = 5):
+def query_summaries(
+    text: str,
+    top_k: int = 5,
+    serial_number: str | None = None,
+    camera_id: str | None = None,
+):
     # 1. Expand and embed query
     expanded = _expand_query(text)
     embedding_client = EmbeddingClient()
     vector = embedding_client.embed(expanded)
 
     # 2. Search with pre-filter, fallback to unfiltered
-    qdrant_filter = _build_filter(text)
+    qdrant_filter = _build_filter(text, serial_number=serial_number, camera_id=camera_id)
     results = _search_qdrant(vector, top_k, qdrant_filter)
     filter_used = bool(qdrant_filter and results)
 
@@ -112,10 +147,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("query", type=str, help="Query text")
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--serial-number", default=None, help="Filter by trailer serial number")
+    parser.add_argument("--camera-id", default=None,
+                        help="Filter by camera ID (non-unique without --serial-number)")
 
     args = parser.parse_args()
 
-    query_summaries(args.query, args.top_k)
+    query_summaries(
+        args.query,
+        args.top_k,
+        serial_number=args.serial_number,
+        camera_id=args.camera_id,
+    )
 
 
 if __name__ == "__main__":

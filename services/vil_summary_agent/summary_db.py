@@ -55,7 +55,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
         text("""
             SELECT summary_id, version
               FROM vil_summaries
-             WHERE tenant_id  = :tenant_id
+             WHERE serial_number  = :serial_number
                AND level      = :level
                AND scope_id   = :scope_id
                AND start_time = :start_time
@@ -63,7 +63,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
                AND is_latest  = true
         """),
         {
-            "tenant_id":  record.tenant_id,
+            "serial_number":  record.serial_number,
             "level":      record.level,
             "scope_id":   record.scope_id,
             "start_time": record.start_time.isoformat(),
@@ -80,18 +80,18 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
     conn.execute(
         text("""
             INSERT INTO vil_summaries (
-                summary_id, tenant_id, level, scope_id,
+                summary_id, serial_number, level, scope_id,
                 start_time, end_time,
                 summary, key_events, metrics, coverage,
-                summary_mode, frames_used, confidence,
+                summary_mode, frames_used, frame_timestamps, confidence,
                 embedding_status, version, is_latest, superseded_by,
                 model_profile, prompt_version, schema_version,
                 source_refs, created_at, updated_at
             ) VALUES (
-                :summary_id, :tenant_id, :level, :scope_id,
+                :summary_id, :serial_number, :level, :scope_id,
                 :start_time, :end_time,
                 :summary, CAST(:key_events AS jsonb), CAST(:metrics AS jsonb), CAST(:coverage AS jsonb),
-                :summary_mode, :frames_used, :confidence,
+                :summary_mode, :frames_used, CAST(:frame_timestamps AS jsonb), :confidence,
                 :embedding_status, :version, true, NULL,
                 :model_profile, :prompt_version, :schema_version,
                 CAST(:source_refs AS jsonb), now(), now()
@@ -100,7 +100,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
         """),
         {
             "summary_id":       record.summary_id,
-            "tenant_id":        record.tenant_id,
+            "serial_number":        record.serial_number,
             "level":            record.level,
             "scope_id":         record.scope_id,
             "start_time":       record.start_time.isoformat(),
@@ -116,6 +116,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
             }),
             "summary_mode":     record.summary_mode,
             "frames_used":      record.frames_used,
+            "frame_timestamps": json.dumps(record.frame_timestamps),
             "confidence":       record.confidence,
             "embedding_status": record.embedding_status,
             "version":          next_version,
@@ -157,7 +158,7 @@ def insert_embedding_job(
     conn,
     *,
     summary_id: str,
-    tenant_id: str,
+    serial_number: str,
     max_attempts: int = 3,
 ) -> str | None:
     """
@@ -174,10 +175,10 @@ def insert_embedding_job(
     row = conn.execute(
         text("""
             INSERT INTO vil_jobs (
-                job_id, job_key, tenant_id, job_type,
+                job_id, job_key, serial_number, job_type,
                 priority, state, attempt_count, max_attempts, payload
             ) VALUES (
-                :job_id, :job_key, :tenant_id, 'embedding_upsert',
+                :job_id, :job_key, :serial_number, 'embedding_upsert',
                 'normal', 'pending', 0, :max_attempts, CAST(:payload AS jsonb)
             )
             ON CONFLICT (job_key) DO NOTHING
@@ -186,9 +187,9 @@ def insert_embedding_job(
         {
             "job_id":       new_job_id,
             "job_key":      job_key,
-            "tenant_id":    tenant_id,
+            "serial_number":    serial_number,
             "max_attempts": max_attempts,
-            "payload":      json.dumps({"summary_id": summary_id, "tenant_id": tenant_id}),
+            "payload":      json.dumps({"summary_id": summary_id, "serial_number": serial_number}),
         },
     ).fetchone()
 
@@ -210,7 +211,7 @@ def insert_embedding_job(
 def upsert_rollup_state_and_maybe_enqueue(
     conn,
     *,
-    tenant_id: str,
+    serial_number: str,
     camera_id: str,
     bucket_start_utc: datetime,
     bucket_end_utc: datetime,
@@ -225,9 +226,9 @@ def upsert_rollup_state_and_maybe_enqueue(
     job via ON CONFLICT (job_key) DO NOTHING.  Idempotency is enforced by the
     UNIQUE(job_key) constraint — never use a SELECT check.
 
-    Returns (rollup_job_id, tenant_id):
+    Returns (rollup_job_id, serial_number):
       - rollup_job_id: new job UUID if a new row was inserted; None otherwise.
-      - tenant_id:     same as input, or None if no new job.
+      - serial_number:     same as input, or None if no new job.
 
     Caller must enqueue_job('rollup_summary', rollup_job_id) AFTER commit,
     only when rollup_job_id is not None.
@@ -237,8 +238,8 @@ def upsert_rollup_state_and_maybe_enqueue(
     hour_start = utc.replace(minute=0, second=0, microsecond=0)
     hour_end = hour_start + timedelta(hours=1)
 
-    parent_key = f"hour:{tenant_id}:{camera_id}:{hour_start.isoformat()}"
-    scope_id = f"{tenant_id}:{camera_id}"
+    parent_key = f"hour:{serial_number}:{camera_id}:{hour_start.isoformat()}"
+    scope_id = f"{serial_number}:{camera_id}"
 
     # Derive expected children from bucket duration; fall back to 4 (15-min buckets)
     duration_s = (bucket_end_utc - bucket_start_utc).total_seconds()
@@ -250,10 +251,10 @@ def upsert_rollup_state_and_maybe_enqueue(
     state_row = conn.execute(
         text("""
             INSERT INTO vil_rollup_state (
-                parent_key, tenant_id, level, window_start, window_end,
+                parent_key, serial_number, level, window_start, window_end,
                 expected_children, present_children, coverage_ratio
             ) VALUES (
-                :parent_key, :tenant_id, 'hour', :window_start, :window_end,
+                :parent_key, :serial_number, 'hour', :window_start, :window_end,
                 :expected, 1, 1.0 / :expected
             )
             ON CONFLICT (parent_key) DO UPDATE SET
@@ -268,7 +269,7 @@ def upsert_rollup_state_and_maybe_enqueue(
         """),
         {
             "parent_key":   parent_key,
-            "tenant_id":    tenant_id,
+            "serial_number":    serial_number,
             "window_start": hour_start.isoformat(),
             "window_end":   hour_end.isoformat(),
             "expected":     expected,
@@ -287,7 +288,7 @@ def upsert_rollup_state_and_maybe_enqueue(
         text("""
             SELECT summary_id
               FROM vil_summaries
-             WHERE tenant_id  = :tenant_id
+             WHERE serial_number  = :serial_number
                AND level      = 'camera'
                AND scope_id   = :camera_id
                AND start_time >= :window_start
@@ -296,7 +297,7 @@ def upsert_rollup_state_and_maybe_enqueue(
              ORDER BY summary_id
         """),
         {
-            "tenant_id":    tenant_id,
+            "serial_number":    serial_number,
             "camera_id":    camera_id,
             "window_start": hour_start.isoformat(),
             "window_end":   hour_end.isoformat(),
@@ -324,10 +325,10 @@ def upsert_rollup_state_and_maybe_enqueue(
     job_row = conn.execute(
         text("""
             INSERT INTO vil_jobs (
-                job_id, job_key, tenant_id, job_type,
+                job_id, job_key, serial_number, job_type,
                 priority, state, attempt_count, max_attempts, payload
             ) VALUES (
-                :job_id, :job_key, :tenant_id, 'rollup_summary',
+                :job_id, :job_key, :serial_number, 'rollup_summary',
                 'normal', 'pending', 0, :max_attempts, CAST(:payload AS jsonb)
             )
             ON CONFLICT (job_key) DO NOTHING
@@ -336,10 +337,10 @@ def upsert_rollup_state_and_maybe_enqueue(
         {
             "job_id":       new_job_id,
             "job_key":      job_key,
-            "tenant_id":    tenant_id,
+            "serial_number":    serial_number,
             "max_attempts": max_rollup_attempts,
             "payload":      json.dumps({
-                "tenant_id":      tenant_id,
+                "serial_number":      serial_number,
                 "scope_id":       scope_id,
                 "camera_id":      camera_id,
                 "window_start":   hour_start.isoformat(),
@@ -360,4 +361,4 @@ def upsert_rollup_state_and_maybe_enqueue(
         "rollup_state: triggered rollup job_id=%s parent=%s coverage=%.2f children=%d",
         new_job_id, parent_key, state_row.coverage_ratio, len(child_ids),
     )
-    return new_job_id, tenant_id
+    return new_job_id, serial_number
