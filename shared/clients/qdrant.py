@@ -121,3 +121,42 @@ def upsert_point(summary_id: str, vector: list[float], payload: dict) -> None:
     )
     resp.raise_for_status()
     log.debug("upserted Qdrant point summary_id=%s qdrant_id=%s", summary_id, qdrant_id)
+
+
+def _search(collection: str, vector: list[float], payload_filter: dict | None, top_k: int) -> list[dict]:
+    """
+    Run a points/search query against the given Qdrant collection.
+
+    Returns the list of hits (each: {id, score, payload, ...}).
+    If the collection does not exist (404), returns [] and logs a warning
+    rather than raising — lets callers degrade gracefully during cold start
+    or before workers have populated a new collection.
+    """
+    url = f"{QDRANT_URL}/collections/{collection}/points/search"
+    body: dict = {"vector": vector, "limit": top_k, "with_payload": True}
+    if payload_filter:
+        body["filter"] = payload_filter
+    resp = httpx.post(url, json=body, timeout=_TIMEOUT)
+    if resp.status_code == 404:
+        log.warning("Qdrant collection %s missing — returning empty result", collection)
+        return []
+    resp.raise_for_status()
+    return resp.json().get("result", []) or []
+
+
+def search_summaries(
+    vector: list[float],
+    payload_filter: dict | None = None,
+    top_k: int = 10,
+) -> list[dict]:
+    """Semantic search over the panoptic_summaries collection."""
+    return _search(_COLLECTION, vector, payload_filter, top_k)
+
+
+def search_image_captions(
+    vector: list[float],
+    payload_filter: dict | None = None,
+    top_k: int = 10,
+) -> list[dict]:
+    """Semantic search over the image_caption_vectors collection."""
+    return _search(_IMAGE_CAPTION_COLLECTION, vector, payload_filter, top_k)

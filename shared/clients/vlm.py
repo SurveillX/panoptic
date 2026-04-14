@@ -127,10 +127,6 @@ class VLMClient:
 
         url = f"{self._base_url}/v1/chat/completions"
 
-        print("=== REQUEST PAYLOAD ===")
-        print(json.dumps(body, indent=2))
-        print("=== END PAYLOAD ===")
-
         try:
             response = httpx.post(
                 url,

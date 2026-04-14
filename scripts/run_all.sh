@@ -32,6 +32,7 @@ fi
 # All services and their module paths
 declare -A SERVICES=(
     [trailer_webhook]="services.trailer_webhook.server"
+    [search_api]="services.search_api.server"
     [panoptic_summary_agent]="services.panoptic_summary_agent.worker"
     [panoptic_rollup_worker]="services.panoptic_rollup_worker.worker"
     [panoptic_embedding_worker]="services.panoptic_embedding_worker.worker"
@@ -42,6 +43,7 @@ declare -A SERVICES=(
 # Ordered startup (webhook first, then workers)
 STARTUP_ORDER=(
     trailer_webhook
+    search_api
     panoptic_summary_agent
     panoptic_rollup_worker
     panoptic_embedding_worker

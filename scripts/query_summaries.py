@@ -1,35 +1,8 @@
-import sys
 import argparse
-import httpx
 
 from shared.clients.embedding import EmbeddingClient
-
-QDRANT_URL = "http://localhost:6333"
-COLLECTION = "panoptic_summaries"
-
-SIGNAL_MAP = {
-    "spike":            "spike in activity",
-    "drop":             "drop in activity",
-    "after hours":      "after hours activity",
-    "start of activity": "start of activity",
-    "start":            "start of activity",
-    "late start":       "late start",
-    "late":             "late start",
-    "underperforming":  "underperforming",
-    "underperform":     "underperforming",
-}
-
-
-def _expand_query(text: str) -> str:
-    """Map signal keywords in the query to canonical phrases."""
-    query_lower = text.lower()
-    phrases = []
-    for keyword, canonical in SIGNAL_MAP.items():
-        if keyword in query_lower:
-            phrases.append(canonical)
-    if phrases:
-        return " ".join(phrases)
-    return text
+from shared.clients.qdrant import search_summaries
+from shared.search.keyword_expansion import expand_query, extract_canonical_labels
 
 
 def _build_filter(
@@ -39,59 +12,27 @@ def _build_filter(
 ) -> dict | None:
     """Build a Qdrant filter matching normalized labels in key_events_labels.
 
-    Optional identity filters:
-      --serial-number only:  filter on serial_number field
-      --camera-id only:      convenience filter on scope_id containing that
-                             camera_id — non-unique, may match across trailers
-      both provided:         exact composite match on scope_id == "{sn}:{cam}"
+    Exact-match semantics only. `camera_id` without `serial_number` is rejected
+    here because scope_id is "{serial_number}:{camera_id}" — matching on
+    camera_id alone would require substring semantics, which we don't allow.
     """
-    query_lower = text.lower()
-    conditions = []
-    for keyword, canonical in SIGNAL_MAP.items():
-        if keyword in query_lower:
+    conditions: list[dict] = []
+
+    labels = extract_canonical_labels(text)
+    if labels:
+        conditions.append({"key": "key_events_labels", "match": {"any": labels}})
+
+    if serial_number:
+        conditions.append({"key": "serial_number", "match": {"value": serial_number}})
+        if camera_id:
             conditions.append({
-                "key": "key_events_labels",
-                "match": {"any": [canonical]},
+                "key": "scope_id",
+                "match": {"value": f"{serial_number}:{camera_id}"},
             })
-
-    # Identity filters
-    if serial_number and camera_id:
-        # Exact composite match
-        conditions.append({
-            "key": "scope_id",
-            "match": {"value": f"{serial_number}:{camera_id}"},
-        })
-    elif serial_number:
-        conditions.append({
-            "key": "serial_number",
-            "match": {"value": serial_number},
-        })
     elif camera_id:
-        # Non-unique convenience filter — may match across multiple trailers
-        conditions.append({
-            "key": "scope_id",
-            "match": {"text": camera_id},
-        })
+        raise ValueError("--camera-id requires --serial-number (no substring matching)")
 
-    if not conditions:
-        return None
-    if len(conditions) == 1:
-        return {"must": conditions}
-    return {"must": conditions}
-
-
-def _search_qdrant(vector, top_k: int, qdrant_filter: dict | None) -> list:
-    url = f"{QDRANT_URL}/collections/{COLLECTION}/points/search"
-    payload = {
-        "vector": vector,
-        "limit": top_k,
-        "with_payload": True,
-    }
-    if qdrant_filter:
-        payload["filter"] = qdrant_filter
-    resp = httpx.post(url, json=payload, timeout=10.0)
-    resp.raise_for_status()
-    return resp.json().get("result", [])
+    return {"must": conditions} if conditions else None
 
 
 def query_summaries(
@@ -101,18 +42,18 @@ def query_summaries(
     camera_id: str | None = None,
 ):
     # 1. Expand and embed query
-    expanded = _expand_query(text)
+    expanded = expand_query(text)
     embedding_client = EmbeddingClient()
     vector = embedding_client.embed(expanded)
 
     # 2. Search with pre-filter, fallback to unfiltered
     qdrant_filter = _build_filter(text, serial_number=serial_number, camera_id=camera_id)
-    results = _search_qdrant(vector, top_k, qdrant_filter)
+    results = search_summaries(vector, qdrant_filter, top_k)
     filter_used = bool(qdrant_filter and results)
 
     if not results and qdrant_filter:
         # Fallback: no filtered results, try unfiltered
-        results = _search_qdrant(vector, top_k, None)
+        results = search_summaries(vector, None, top_k)
         filter_used = False
 
     # 3. Print results
