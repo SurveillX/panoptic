@@ -1,9 +1,10 @@
 """
-vil-embedding-worker — embedding_upsert consumer.
+panoptic-image-caption-worker — image_caption consumer.
 
 Worker loop:
-  consume_next → claim_job → LeaseHeartbeat → run_embedding_job
-  → release_job → verify lease → commit → enqueue_dlq (if terminal) → ACK
+  consume_next → claim_job → LeaseHeartbeat → run_image_caption_job
+  → chain caption_embed job (if new caption) → release_job → verify lease
+  → commit → enqueue caption_embed (post-commit) → enqueue_dlq (if terminal) → ACK
 
 ACK contract (strictly enforced):
   claim fails           → no ACK
@@ -18,15 +19,15 @@ Postgres commit is always durable before any Redis write.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 
 from sqlalchemy import create_engine, text
 
-from services.vil_embedding_worker.executor import run_embedding_job
-from shared.clients.embedding import EMBEDDING_MODEL, get_embedding_client
-from shared.clients.qdrant import QDRANT_URL, ensure_collection
-from shared.clients.vector_store_qdrant import QdrantVectorStore
+from services.panoptic_image_caption_worker.executor import run_image_caption_job
+from shared.clients.vlm import get_vlm_client
+from shared.schemas.job import make_caption_embed_key
 from shared.utils.leases import (
     LeaseHeartbeat,
     claim_job,
@@ -42,18 +43,19 @@ from shared.utils.streams import (
     bootstrap_streams,
     consume_next,
     enqueue_dlq,
+    enqueue_job,
 )
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 
 
 # ---------------------------------------------------------------------------
 # Message processor
 # ---------------------------------------------------------------------------
 
-def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_store) -> bool:
+def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
     """
     Process one stream message end-to-end.
 
@@ -78,6 +80,8 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
     # ------------------------------------------------------------------
     job_state = "failed_terminal"
     last_error: str | None = None
+    should_chain = False
+    chain_job_id: str | None = None
 
     with engine.connect() as conn:
         with LeaseHeartbeat(engine, job_id, worker_id) as hb:
@@ -85,26 +89,22 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
             job_row = conn.execute(
                 text("""
                     SELECT payload, attempt_count, max_attempts
-                      FROM vil_jobs
+                      FROM panoptic_jobs
                      WHERE job_id = :job_id
                 """),
                 {"job_id": job_id},
             ).fetchone()
 
             if job_row is None:
-                log.error(
-                    "_process_message: job_id=%s missing from vil_jobs after claim",
-                    job_id,
-                )
+                log.error("_process_message: job_id=%s missing after claim", job_id)
                 return False
 
             try:
-                job_state = run_embedding_job(
+                job_state, should_chain = run_image_caption_job(
                     conn,
                     payload=job_row.payload,
                     worker_id=worker_id,
-                    embedding_client=embedding_client,
-                    vector_store=vector_store,
+                    vlm_client=vlm_client,
                 )
             except Exception as exc:
                 log.exception(
@@ -116,6 +116,34 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
                     else "retry_wait"
                 )
                 last_error = str(exc)[:1000]
+                should_chain = False
+
+            # -- Chain: create caption_embed job if caption succeeded --
+            if should_chain and job_state == "succeeded":
+                image_id = job_row.payload["image_id"]
+                chain_key = make_caption_embed_key(image_id)
+                chain_result = conn.execute(
+                    text("""
+                        INSERT INTO panoptic_jobs (
+                            job_key, serial_number, job_type, payload
+                        ) VALUES (
+                            :job_key, :serial_number, 'caption_embed',
+                            CAST(:payload AS jsonb)
+                        )
+                        ON CONFLICT (job_key) DO NOTHING
+                        RETURNING job_id
+                    """),
+                    {
+                        "job_key": chain_key,
+                        "serial_number": claim.serial_number,
+                        "payload": json.dumps({
+                            "image_id": image_id,
+                            "serial_number": claim.serial_number,
+                        }),
+                    },
+                )
+                chain_row = chain_result.fetchone()
+                chain_job_id = str(chain_row.job_id) if chain_row else None
 
             retry_delay = (
                 compute_retry_delay(job_row.attempt_count)
@@ -149,13 +177,31 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
             conn.commit()
 
     # ------------------------------------------------------------------
+    # Post-commit: enqueue caption_embed if chained
+    # ------------------------------------------------------------------
+    if chain_job_id is not None:
+        try:
+            enqueue_job(
+                r,
+                job_type="caption_embed",
+                job_id=chain_job_id,
+                serial_number=claim.serial_number,
+            )
+        except Exception as exc:
+            log.error(
+                "_process_message: caption_embed enqueue failed job_id=%s: %s "
+                "— job exists in Postgres, reclaimer will pick it up",
+                chain_job_id, exc,
+            )
+
+    # ------------------------------------------------------------------
     # Post-commit: DLQ if terminal
     # ------------------------------------------------------------------
     if job_state == "failed_terminal":
         try:
             enqueue_dlq(
                 r,
-                job_type="embedding_upsert",
+                job_type="image_caption",
                 job_id=job_id,
                 serial_number=claim.serial_number,
                 reason=last_error or "unknown error",
@@ -166,9 +212,7 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
             )
 
     ack_message(r, stream=msg.stream, group=msg.group, entry_id=msg.entry_id)
-    log.info(
-        "_process_message: completed job_id=%s state=%s", job_id, job_state
-    )
+    log.info("_process_message: completed job_id=%s state=%s", job_id, job_state)
     return True
 
 
@@ -176,16 +220,16 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_st
 # Worker loop
 # ---------------------------------------------------------------------------
 
-def run_worker(engine, r, worker_id: str, embedding_client, vector_store) -> None:
+def run_worker(engine, r, worker_id: str, vlm_client) -> None:
     """
-    Main worker loop: block-reads and processes embedding_upsert jobs indefinitely.
+    Main worker loop: block-reads and processes image_caption jobs indefinitely.
     """
-    stream = STREAM_FOR_JOB_TYPE["embedding_upsert"]
-    group = GROUP_FOR_JOB_TYPE["embedding_upsert"]
+    stream = STREAM_FOR_JOB_TYPE["image_caption"]
+    group = GROUP_FOR_JOB_TYPE["image_caption"]
 
     log.info(
-        "worker starting worker_id=%s stream=%s group=%s model=%s",
-        worker_id, stream, group, EMBEDDING_MODEL,
+        "worker starting worker_id=%s stream=%s group=%s",
+        worker_id, stream, group,
     )
 
     while True:
@@ -195,7 +239,7 @@ def run_worker(engine, r, worker_id: str, embedding_client, vector_store) -> Non
 
         log.debug("worker: received job_id=%s", msg.job_id)
         try:
-            _process_message(engine, r, msg, worker_id, embedding_client, vector_store)
+            _process_message(engine, r, msg, worker_id, vlm_client)
         except Exception as exc:
             log.exception(
                 "worker: unhandled error for job_id=%s — message stays in PEL: %s",
@@ -217,24 +261,13 @@ def main() -> None:
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     r = get_redis_client()
 
-    embedding_client = get_embedding_client()
-    log.info("embedding model: %s", EMBEDDING_MODEL)
-
-    # Warm up model and ensure Qdrant collection exists before consuming jobs.
-    log.info("warming up embedding model...")
-    probe_vector = embedding_client.embed("warmup")
-    ensure_collection(vector_size=len(probe_vector))
-    log.info(
-        "Qdrant ready: %s collection=vil_summaries dim=%d",
-        QDRANT_URL, len(probe_vector),
-    )
-
-    vector_store = QdrantVectorStore()
+    vlm_client = get_vlm_client()
+    log.info("vLLM configured: %s model=%s", vlm_client._base_url, vlm_client._model)
 
     bootstrap_streams(r)
     worker_id = generate_worker_id()
 
-    run_worker(engine, r, worker_id, embedding_client, vector_store)
+    run_worker(engine, r, worker_id, vlm_client)
 
 
 if __name__ == "__main__":

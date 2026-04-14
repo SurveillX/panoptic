@@ -27,7 +27,7 @@ from sqlalchemy import text
 from shared.clients.continuum import ContinuumClient, ContinuumFrameResponse, ContinuumNetworkError
 from shared.clients.vlm import VLMClient, VLMAuthError, VLMError, VLMNetworkError
 
-from services.vil_summary_agent.summary_db import (
+from services.panoptic_summary_agent.summary_db import (
     insert_embedding_job,
     upsert_rollup_state_and_maybe_enqueue,
     upsert_summary,
@@ -115,7 +115,7 @@ def run_bucket_summary(
     Parameters
     ----------
     conn             : open SQLAlchemy connection (transaction in progress)
-    payload          : vil_jobs.payload dict
+    payload          : panoptic_jobs.payload dict
     worker_id        : worker identity (for logging)
     attempt_count    : current attempt number from ClaimResult
     keyframe_client  : KeyframeClient | None
@@ -135,13 +135,13 @@ def run_bucket_summary(
     # Step 2: Load bucket
     # ------------------------------------------------------------------
     bucket_row = conn.execute(
-        text("SELECT * FROM vil_buckets WHERE bucket_id = :bucket_id"),
+        text("SELECT * FROM panoptic_buckets WHERE bucket_id = :bucket_id"),
         {"bucket_id": bucket_id},
     ).fetchone()
 
     if bucket_row is None:
         log.error(
-            "run_bucket_summary: bucket_id=%s not found in vil_buckets", bucket_id
+            "run_bucket_summary: bucket_id=%s not found in panoptic_buckets", bucket_id
         )
         return ExecutionResult(
             job_state="failed_terminal",

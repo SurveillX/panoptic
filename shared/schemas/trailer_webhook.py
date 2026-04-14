@@ -2,7 +2,7 @@
 Pydantic models for the trailer webhook payload.
 
 The trailer pushes one POST per object_type per 15-minute bucket window.
-VIL aggregates these fragments into a single BucketRecord before ingestion.
+Panoptic aggregates these fragments into a single BucketRecord before ingestion.
 """
 
 from __future__ import annotations

@@ -88,7 +88,7 @@ def make_caption_embed_key(image_id: str) -> str:
 
 class JobRecord(BaseModel):
     """
-    Full authoritative job record as stored in vil_jobs.
+    Full authoritative job record as stored in panoptic_jobs.
     """
 
     model_config = ConfigDict(strict=True)

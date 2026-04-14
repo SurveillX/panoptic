@@ -1,8 +1,8 @@
 """
-Lease management for VIL workers.
+Lease management for Panoptic workers.
 
 Design guarantees:
-  - Postgres (vil_jobs) is the authoritative source of truth for lease state.
+  - Postgres (panoptic_jobs) is the authoritative source of truth for lease state.
   - Redis Streams is the delivery mechanism only.
   - At-least-once execution: a crashed worker's job is reclaimed and retried.
   - No duplicate execution: claim_job uses a conditional Postgres UPDATE
@@ -138,7 +138,7 @@ def claim_job(
 
     row = conn.execute(
         text("""
-            UPDATE vil_jobs
+            UPDATE panoptic_jobs
                SET state            = 'leased',
                    lease_owner      = :worker_id,
                    lease_expires_at = :expires_at,
@@ -198,7 +198,7 @@ def renew_lease(
 
     result = conn.execute(
         text("""
-            UPDATE vil_jobs
+            UPDATE panoptic_jobs
                SET lease_expires_at = :expires_at,
                    updated_at       = now()
              WHERE job_id      = :job_id
@@ -230,7 +230,7 @@ def mark_running(
     """
     row = conn.execute(
         text("""
-            UPDATE vil_jobs
+            UPDATE panoptic_jobs
                SET state      = 'running',
                    updated_at = now()
              WHERE job_id      = :job_id
@@ -296,7 +296,7 @@ def release_job(
         retry_until = datetime.now(timezone.utc) + timedelta(seconds=retry_after_seconds)
         row = conn.execute(
             text("""
-                UPDATE vil_jobs
+                UPDATE panoptic_jobs
                    SET state            = 'retry_wait',
                        lease_owner      = NULL,
                        lease_expires_at = :retry_until,
@@ -316,7 +316,7 @@ def release_job(
     else:
         row = conn.execute(
             text("""
-                UPDATE vil_jobs
+                UPDATE panoptic_jobs
                    SET state            = :new_state,
                        lease_owner      = NULL,
                        lease_expires_at = NULL,
@@ -503,7 +503,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
         rows = conn.execute(
             text("""
                 SELECT job_id, serial_number, job_type, attempt_count, max_attempts
-                  FROM vil_jobs
+                  FROM panoptic_jobs
                  WHERE state IN ('leased', 'running', 'retry_wait')
                    AND lease_expires_at < now()
                  ORDER BY lease_expires_at
@@ -523,7 +523,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
                 # Step 1: UPDATE Postgres
                 conn.execute(
                     text("""
-                        UPDATE vil_jobs
+                        UPDATE panoptic_jobs
                            SET state            = 'failed_terminal',
                                lease_owner      = NULL,
                                lease_expires_at = NULL,
@@ -569,7 +569,7 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
                 # Step 1: UPDATE Postgres → pending
                 conn.execute(
                     text("""
-                        UPDATE vil_jobs
+                        UPDATE panoptic_jobs
                            SET state            = 'pending',
                                lease_owner      = NULL,
                                lease_expires_at = NULL,
@@ -635,13 +635,13 @@ def _append_job_history(
     note: str | None,
 ) -> None:
     """
-    Append a row to vil_job_history.
+    Append a row to panoptic_job_history.
 
-    vil_job_history is append-only — never UPDATE or DELETE from it.
+    panoptic_job_history is append-only — never UPDATE or DELETE from it.
     """
     conn.execute(
         text("""
-            INSERT INTO vil_job_history
+            INSERT INTO panoptic_job_history
                 (job_id, serial_number, from_state, to_state, worker_id, note)
             VALUES
                 (:job_id, :serial_number, :from_state, :to_state, :worker_id, :note)

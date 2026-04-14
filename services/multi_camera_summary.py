@@ -1,7 +1,7 @@
 """
 Multi-camera summary — aggregates summaries across multiple cameras.
 
-Queries vil_summaries for a set of cameras within a time window,
+Queries panoptic_summaries for a set of cameras within a time window,
 aggregates signals and summaries, then calls the LLM to produce
 a single combined summary.
 
@@ -28,7 +28,7 @@ from shared.clients.vlm import get_vlm_client
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 
 # Normalize labels — same mapping as embedding worker
 _LABEL_CONTAINS = [
@@ -68,7 +68,7 @@ def multi_camera_summary(
         rows = conn.execute(
             text("""
                 SELECT scope_id, summary, key_events, start_time, end_time
-                  FROM vil_summaries
+                  FROM panoptic_summaries
                  WHERE level = 'camera'
                    AND scope_id = ANY(:camera_ids)
                    AND start_time >= :start_time

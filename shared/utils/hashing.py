@@ -1,5 +1,5 @@
 """
-Hashing utilities shared across VIL components.
+Hashing utilities shared across Panoptic components.
 
 compute_child_set_hash: produces a stable hash from a set of child summary IDs
 regardless of the order in which they were received.  Used by:

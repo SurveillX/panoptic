@@ -7,7 +7,7 @@ Configuration:
   QDRANT_URL — base URL of the Qdrant instance (default: http://localhost:6333)
 
 Collection:
-  name: vil_summaries
+  name: panoptic_summaries
   distance: Cosine
   vector size: inferred from the first embedding at startup
 
@@ -28,7 +28,7 @@ import httpx
 log = logging.getLogger(__name__)
 
 QDRANT_URL: str = os.environ.get("QDRANT_URL", "http://localhost:6333")
-_COLLECTION = "vil_summaries"
+_COLLECTION = "panoptic_summaries"
 _TIMEOUT = 30.0
 
 
@@ -44,7 +44,7 @@ def _summary_id_to_qdrant_id(summary_id: str) -> str:
 
 def ensure_collection(vector_size: int) -> None:
     """
-    Create the vil_summaries collection if it does not exist.
+    Create the panoptic_summaries collection if it does not exist.
 
     Safe to call on every startup — idempotent.
     Raises httpx.HTTPStatusError on unexpected Qdrant errors.
@@ -107,7 +107,7 @@ def upsert_image_caption_point(image_id: str, vector: list[float], payload: dict
 
 def upsert_point(summary_id: str, vector: list[float], payload: dict) -> None:
     """
-    Upsert a single point into the vil_summaries collection.
+    Upsert a single point into the panoptic_summaries collection.
 
     Idempotent — upserting the same summary_id overwrites the previous point.
     Raises httpx.HTTPStatusError on Qdrant errors.

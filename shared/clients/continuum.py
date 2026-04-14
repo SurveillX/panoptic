@@ -4,7 +4,7 @@ Continuum frame client — fetches JPEG frames from trailer edge devices.
 Trailers expose:
   GET https://{serial_number}.trailers.surveillx.ai/continuum/v1/recordings/{head_id}/frame?t={epoch_ms}
 
-Returns raw JPEG bytes.  VIL must download locally and pass to vLLM as
+Returns raw JPEG bytes.  Panoptic must download locally and pass to vLLM as
 base64 data URIs since vLLM cannot reach the trailer directly (edge NAT).
 
 Retry policy: 2 attempts with 2s delay (mirrors KeyframeClient).

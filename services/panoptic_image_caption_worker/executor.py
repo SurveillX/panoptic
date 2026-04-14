@@ -2,12 +2,12 @@
 image_caption job executor.
 
 Steps:
-  1. Fetch vil_images row by image_id (from payload).
+  1. Fetch panoptic_images row by image_id (from payload).
   2. If caption_status == 'success': return succeeded (idempotent no-op).
   3. Read JPEG from storage_path, encode as base64 data URI.
   4. Call VLM with caption prompt + image.
   5. Parse JSON response, extract caption text.
-  6. UPDATE vil_images SET caption_status='success', caption_text, caption_model.
+  6. UPDATE panoptic_images SET caption_status='success', caption_text, caption_model.
 
 Returns a tuple of (job_state, should_chain):
   ("succeeded", True)   — caption generated, caller should enqueue caption_embed
@@ -65,7 +65,7 @@ def run_image_caption_job(
     row = conn.execute(
         text("""
             SELECT image_id, storage_path, caption_status
-              FROM vil_images
+              FROM panoptic_images
              WHERE image_id = :image_id
         """),
         {"image_id": image_id},
@@ -119,7 +119,7 @@ def run_image_caption_job(
             log.error("run_image_caption_job: empty caption image_id=%s", image_id)
             conn.execute(
                 text("""
-                    UPDATE vil_images
+                    UPDATE panoptic_images
                        SET caption_status = 'failed',
                            updated_at     = now()
                      WHERE image_id = :image_id
@@ -133,7 +133,7 @@ def run_image_caption_job(
     # ------------------------------------------------------------------
     conn.execute(
         text("""
-            UPDATE vil_images
+            UPDATE panoptic_images
                SET caption_status = 'success',
                    caption_model  = :caption_model,
                    caption_text   = :caption_text,

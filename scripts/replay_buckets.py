@@ -27,7 +27,7 @@ from shared.utils.redis_client import get_redis_client
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 SCHEMA_VERSION = 2
 
 

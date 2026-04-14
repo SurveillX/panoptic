@@ -38,7 +38,7 @@ _BUCKETS_PER_HOUR = 4
 
 def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
     """
-    Upsert a summary record into vil_summaries.
+    Upsert a summary record into panoptic_summaries.
 
     Returns (summary_id, was_new: bool).
 
@@ -54,7 +54,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
     existing = conn.execute(
         text("""
             SELECT summary_id, version
-              FROM vil_summaries
+              FROM panoptic_summaries
              WHERE serial_number  = :serial_number
                AND level      = :level
                AND scope_id   = :scope_id
@@ -79,7 +79,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
 
     conn.execute(
         text("""
-            INSERT INTO vil_summaries (
+            INSERT INTO panoptic_summaries (
                 summary_id, serial_number, level, scope_id,
                 start_time, end_time,
                 summary, key_events, metrics, coverage,
@@ -130,7 +130,7 @@ def upsert_summary(conn, record: SummaryRecord) -> tuple[str, bool]:
     if existing:
         conn.execute(
             text("""
-                UPDATE vil_summaries
+                UPDATE panoptic_summaries
                    SET superseded_by = :new_id,
                        is_latest     = false,
                        updated_at    = now()
@@ -162,7 +162,7 @@ def insert_embedding_job(
     max_attempts: int = 3,
 ) -> str | None:
     """
-    Insert an embedding_upsert job into vil_jobs.
+    Insert an embedding_upsert job into panoptic_jobs.
 
     Returns the new job_id UUID string if inserted.
     Returns None if a job with the same job_key already exists (idempotent).
@@ -174,7 +174,7 @@ def insert_embedding_job(
 
     row = conn.execute(
         text("""
-            INSERT INTO vil_jobs (
+            INSERT INTO panoptic_jobs (
                 job_id, job_key, serial_number, job_type,
                 priority, state, attempt_count, max_attempts, payload
             ) VALUES (
@@ -220,7 +220,7 @@ def upsert_rollup_state_and_maybe_enqueue(
     max_rollup_attempts: int = 3,
 ) -> tuple[str | None, str | None]:
     """
-    Update vil_rollup_state for the parent hour window.
+    Update panoptic_rollup_state for the parent hour window.
 
     If coverage_ratio >= 0.5 after the update, attempt to insert a rollup_summary
     job via ON CONFLICT (job_key) DO NOTHING.  Idempotency is enforced by the
@@ -250,7 +250,7 @@ def upsert_rollup_state_and_maybe_enqueue(
 
     state_row = conn.execute(
         text("""
-            INSERT INTO vil_rollup_state (
+            INSERT INTO panoptic_rollup_state (
                 parent_key, serial_number, level, window_start, window_end,
                 expected_children, present_children, coverage_ratio
             ) VALUES (
@@ -258,10 +258,10 @@ def upsert_rollup_state_and_maybe_enqueue(
                 :expected, 1, 1.0 / :expected
             )
             ON CONFLICT (parent_key) DO UPDATE SET
-                present_children = vil_rollup_state.present_children + 1,
+                present_children = panoptic_rollup_state.present_children + 1,
                 coverage_ratio   = least(
-                    (vil_rollup_state.present_children + 1.0)
-                    / vil_rollup_state.expected_children,
+                    (panoptic_rollup_state.present_children + 1.0)
+                    / panoptic_rollup_state.expected_children,
                     1.0
                 ),
                 updated_at       = now()
@@ -287,7 +287,7 @@ def upsert_rollup_state_and_maybe_enqueue(
     child_rows = conn.execute(
         text("""
             SELECT summary_id
-              FROM vil_summaries
+              FROM panoptic_summaries
              WHERE serial_number  = :serial_number
                AND level      = 'camera'
                AND scope_id   = :camera_id
@@ -324,7 +324,7 @@ def upsert_rollup_state_and_maybe_enqueue(
 
     job_row = conn.execute(
         text("""
-            INSERT INTO vil_jobs (
+            INSERT INTO panoptic_jobs (
                 job_id, job_key, serial_number, job_type,
                 priority, state, attempt_count, max_attempts, payload
             ) VALUES (

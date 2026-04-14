@@ -1,21 +1,21 @@
 """
-Redis Streams contract for VIL job queues.
+Redis Streams contract for Panoptic job queues.
 
 Streams (job delivery):
-  vil:jobs:bucket_summary
-  vil:jobs:rollup_summary
-  vil:jobs:embedding_upsert
-  vil:jobs:recompute
+  panoptic:jobs:bucket_summary
+  panoptic:jobs:rollup_summary
+  panoptic:jobs:embedding_upsert
+  panoptic:jobs:recompute
 
 DLQ streams (terminal failures):
-  vil:dlq:bucket_summary
-  vil:dlq:rollup_summary
-  vil:dlq:embedding_upsert
-  vil:dlq:recompute
+  panoptic:dlq:bucket_summary
+  panoptic:dlq:rollup_summary
+  panoptic:dlq:embedding_upsert
+  panoptic:dlq:recompute
 
 Consumer groups:
-  vil-summary-workers   → bucket_summary, rollup_summary, recompute
-  vil-embedding-workers → embedding_upsert
+  panoptic-summary-workers   → bucket_summary, rollup_summary, recompute
+  panoptic-embedding-workers → embedding_upsert
 
 Stream messages carry only routing fields; full job payload lives in Postgres.
 Workers look up the job by job_id from Postgres after claiming.
@@ -40,31 +40,31 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 STREAM_FOR_JOB_TYPE: dict[str, str] = {
-    "bucket_summary":    "vil:jobs:bucket_summary",
-    "rollup_summary":    "vil:jobs:rollup_summary",
-    "embedding_upsert":  "vil:jobs:embedding_upsert",
-    "recompute_summary": "vil:jobs:recompute",
-    "image_caption":     "vil:jobs:image_caption",
-    "caption_embed":     "vil:jobs:caption_embed",
+    "bucket_summary":    "panoptic:jobs:bucket_summary",
+    "rollup_summary":    "panoptic:jobs:rollup_summary",
+    "embedding_upsert":  "panoptic:jobs:embedding_upsert",
+    "recompute_summary": "panoptic:jobs:recompute",
+    "image_caption":     "panoptic:jobs:image_caption",
+    "caption_embed":     "panoptic:jobs:caption_embed",
 }
 
 DLQ_FOR_JOB_TYPE: dict[str, str] = {
-    "bucket_summary":    "vil:dlq:bucket_summary",
-    "rollup_summary":    "vil:dlq:rollup_summary",
-    "embedding_upsert":  "vil:dlq:embedding_upsert",
-    "recompute_summary": "vil:dlq:recompute",
-    "image_caption":     "vil:dlq:image_caption",
-    "caption_embed":     "vil:dlq:caption_embed",
+    "bucket_summary":    "panoptic:dlq:bucket_summary",
+    "rollup_summary":    "panoptic:dlq:rollup_summary",
+    "embedding_upsert":  "panoptic:dlq:embedding_upsert",
+    "recompute_summary": "panoptic:dlq:recompute",
+    "image_caption":     "panoptic:dlq:image_caption",
+    "caption_embed":     "panoptic:dlq:caption_embed",
 }
 
 # Each stream has exactly one consumer group.
 CONSUMER_GROUP_FOR_STREAM: dict[str, str] = {
-    "vil:jobs:bucket_summary":   "vil-summary-workers",
-    "vil:jobs:rollup_summary":   "vil-summary-workers",
-    "vil:jobs:embedding_upsert": "vil-embedding-workers",
-    "vil:jobs:recompute":        "vil-recompute-workers",
-    "vil:jobs:image_caption":    "vil-image-caption-workers",
-    "vil:jobs:caption_embed":    "vil-caption-embed-workers",
+    "panoptic:jobs:bucket_summary":   "panoptic-summary-workers",
+    "panoptic:jobs:rollup_summary":   "panoptic-summary-workers",
+    "panoptic:jobs:embedding_upsert": "panoptic-embedding-workers",
+    "panoptic:jobs:recompute":        "panoptic-recompute-workers",
+    "panoptic:jobs:image_caption":    "panoptic-image-caption-workers",
+    "panoptic:jobs:caption_embed":    "panoptic-caption-embed-workers",
 }
 
 # Convenience: group name by job type.
@@ -141,7 +141,7 @@ def enqueue_job(
 
     Returns the Redis stream entry ID.
 
-    The full job payload is stored in Postgres (vil_jobs); only routing
+    The full job payload is stored in Postgres (panoptic_jobs); only routing
     fields are put into the stream message.
 
     Raises KeyError if job_type is unknown.

@@ -28,8 +28,8 @@ from typing import Literal
 
 from sqlalchemy import text
 
-from services.vil_summary_agent.executor import _call_and_validate
-from services.vil_summary_agent.summary_db import insert_embedding_job, upsert_summary
+from services.panoptic_summary_agent.executor import _call_and_validate
+from services.panoptic_summary_agent.summary_db import insert_embedding_job, upsert_summary
 from shared.clients.vlm import VLMClient
 from shared.schemas.llm import LLMSummaryOutput
 from shared.schemas.summary import SummaryCoverage, SummaryRecord, generate_summary_id
@@ -79,7 +79,7 @@ def run_rollup_job(
     rows = conn.execute(
         text(f"""
             SELECT summary_id, summary, confidence, start_time, end_time
-              FROM vil_summaries
+              FROM panoptic_summaries
              WHERE summary_id IN ({placeholders})
                AND is_latest = true
              ORDER BY start_time

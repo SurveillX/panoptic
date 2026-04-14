@@ -1,0 +1,10 @@
+serverAddr = "YOUR_DROPLET_IP"
+serverPort = 7000
+
+auth.token = "REPLACE_ME"
+
+[[proxies]]
+name = "vil"
+type = "http"
+localPort = 8000
+subdomain = "vil"

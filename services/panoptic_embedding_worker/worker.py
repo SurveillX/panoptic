@@ -1,21 +1,19 @@
 """
-vil-rollup-worker — rollup_summary consumer (L2 hour-level).
+panoptic-embedding-worker — embedding_upsert consumer.
 
 Worker loop:
-  consume_next → claim_job → LeaseHeartbeat → run_rollup_job
-  → release_job → verify lease → commit → enqueue embedding → ACK
+  consume_next → claim_job → LeaseHeartbeat → run_embedding_job
+  → release_job → verify lease → commit → enqueue_dlq (if terminal) → ACK
 
 ACK contract (strictly enforced):
   claim fails           → no ACK
   lease stolen          → no ACK, no commit
   lease lost pre-commit → no ACK, no commit
-  succeeded/degraded    → release_job → verify lease → commit
-                          → enqueue embedding → ACK
-  retry_wait            → release_job → verify lease → commit → ACK
+  succeeded / retry_wait → release_job → verify lease → commit → ACK
   failed_terminal       → release_job → verify lease → commit
                           → enqueue_dlq → ACK
 
-Redis enqueues happen only AFTER the Postgres commit is durable.
+Postgres commit is always durable before any Redis write.
 """
 
 from __future__ import annotations
@@ -25,8 +23,10 @@ import os
 
 from sqlalchemy import create_engine, text
 
-from services.vil_rollup_worker.executor import RollupResult, run_rollup_job
-from shared.clients.vlm import VLLM_BASE_URL, get_vlm_client
+from services.panoptic_embedding_worker.executor import run_embedding_job
+from shared.clients.embedding import EMBEDDING_MODEL, get_embedding_client
+from shared.clients.qdrant import QDRANT_URL, ensure_collection
+from shared.clients.vector_store_qdrant import QdrantVectorStore
 from shared.utils.leases import (
     LeaseHeartbeat,
     claim_job,
@@ -42,23 +42,23 @@ from shared.utils.streams import (
     bootstrap_streams,
     consume_next,
     enqueue_dlq,
-    enqueue_job,
 )
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 
 
 # ---------------------------------------------------------------------------
 # Message processor
 # ---------------------------------------------------------------------------
 
-def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
+def _process_message(engine, r, msg, worker_id: str, embedding_client, vector_store) -> bool:
     """
-    Process one rollup_summary stream message end-to-end.
+    Process one stream message end-to-end.
 
-    Returns True if ACK'd, False if left in PEL for reclaimer.
+    Returns True if the message was ACK'd.
+    Returns False if not ACK'd (message stays in PEL for reclaimer).
     """
     job_id = msg.job_id
 
@@ -74,9 +74,10 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
         return False
 
     # ------------------------------------------------------------------
-    # Steps 2–N: execute within single connection + heartbeat
+    # Steps 2–N: execute within a single connection + heartbeat
     # ------------------------------------------------------------------
-    result: RollupResult = RollupResult(job_state="failed_terminal", embedding_job_id=None)
+    job_state = "failed_terminal"
+    last_error: str | None = None
 
     with engine.connect() as conn:
         with LeaseHeartbeat(engine, job_id, worker_id) as hb:
@@ -84,7 +85,7 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
             job_row = conn.execute(
                 text("""
                     SELECT payload, attempt_count, max_attempts
-                      FROM vil_jobs
+                      FROM panoptic_jobs
                      WHERE job_id = :job_id
                 """),
                 {"job_id": job_id},
@@ -92,20 +93,18 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
 
             if job_row is None:
                 log.error(
-                    "_process_message: job_id=%s missing from vil_jobs after claim",
+                    "_process_message: job_id=%s missing from panoptic_jobs after claim",
                     job_id,
                 )
                 return False
 
-            last_error: str | None = None
-
             try:
-                result = run_rollup_job(
+                job_state = run_embedding_job(
                     conn,
                     payload=job_row.payload,
                     worker_id=worker_id,
-                    attempt_count=job_row.attempt_count,
-                    vlm_client=vlm_client,
+                    embedding_client=embedding_client,
+                    vector_store=vector_store,
                 )
             except Exception as exc:
                 log.exception(
@@ -116,19 +115,18 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
                     if job_row.attempt_count >= job_row.max_attempts
                     else "retry_wait"
                 )
-                result = RollupResult(job_state=job_state, embedding_job_id=None)
                 last_error = str(exc)[:1000]
 
             retry_delay = (
                 compute_retry_delay(job_row.attempt_count)
-                if result.job_state == "retry_wait"
+                if job_state == "retry_wait"
                 else None
             )
             released = release_job(
                 conn,
                 job_id=job_id,
                 worker_id=worker_id,
-                new_state=result.job_state,
+                new_state=job_state,
                 last_error=last_error,
                 retry_after_seconds=retry_delay,
             )
@@ -150,34 +148,14 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
 
             conn.commit()
 
-    # HeartbeatLease context exited before post-commit work.
-
     # ------------------------------------------------------------------
-    # Post-commit enqueues (only after commit is durable)
+    # Post-commit: DLQ if terminal
     # ------------------------------------------------------------------
-    if result.job_state in ("succeeded", "degraded"):
-        if result.embedding_job_id:
-            try:
-                enqueue_job(
-                    r,
-                    job_type="embedding_upsert",
-                    job_id=result.embedding_job_id,
-                    serial_number=claim.serial_number,
-                    priority="normal",
-                )
-            except Exception as exc:
-                log.error(
-                    "_process_message: embedding enqueue failed "
-                    "embedding_job_id=%s rollup_job_id=%s: %s",
-                    result.embedding_job_id, job_id, exc,
-                )
-                # job is 'pending' in Postgres; orchestrator scan will re-enqueue
-
-    elif result.job_state == "failed_terminal":
+    if job_state == "failed_terminal":
         try:
             enqueue_dlq(
                 r,
-                job_type="rollup_summary",
+                job_type="embedding_upsert",
                 job_id=job_id,
                 serial_number=claim.serial_number,
                 reason=last_error or "unknown error",
@@ -189,8 +167,7 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
 
     ack_message(r, stream=msg.stream, group=msg.group, entry_id=msg.entry_id)
     log.info(
-        "_process_message: completed job_id=%s state=%s",
-        job_id, result.job_state,
+        "_process_message: completed job_id=%s state=%s", job_id, job_state
     )
     return True
 
@@ -199,17 +176,16 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
 # Worker loop
 # ---------------------------------------------------------------------------
 
-def run_worker(engine, r, worker_id: str, vlm_client) -> None:
+def run_worker(engine, r, worker_id: str, embedding_client, vector_store) -> None:
     """
-    Main worker loop: block-reads and processes rollup_summary jobs indefinitely.
+    Main worker loop: block-reads and processes embedding_upsert jobs indefinitely.
     """
-    stream = STREAM_FOR_JOB_TYPE["rollup_summary"]
-    group = GROUP_FOR_JOB_TYPE["rollup_summary"]
+    stream = STREAM_FOR_JOB_TYPE["embedding_upsert"]
+    group = GROUP_FOR_JOB_TYPE["embedding_upsert"]
 
     log.info(
-        "worker starting worker_id=%s stream=%s group=%s vlm=%s",
-        worker_id, stream, group,
-        "enabled" if vlm_client is not None else "stub",
+        "worker starting worker_id=%s stream=%s group=%s model=%s",
+        worker_id, stream, group, EMBEDDING_MODEL,
     )
 
     while True:
@@ -219,7 +195,7 @@ def run_worker(engine, r, worker_id: str, vlm_client) -> None:
 
         log.debug("worker: received job_id=%s", msg.job_id)
         try:
-            _process_message(engine, r, msg, worker_id, vlm_client)
+            _process_message(engine, r, msg, worker_id, embedding_client, vector_store)
         except Exception as exc:
             log.exception(
                 "worker: unhandled error for job_id=%s — message stays in PEL: %s",
@@ -232,7 +208,7 @@ def run_worker(engine, r, worker_id: str, vlm_client) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    """Bootstrap and start the rollup worker process."""
+    """Bootstrap and start the worker process."""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -241,20 +217,24 @@ def main() -> None:
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
     r = get_redis_client()
 
-    if VLLM_BASE_URL:
-        vlm_client = get_vlm_client()
-        log.info("vLLM configured: %s model=%s", VLLM_BASE_URL, vlm_client._model)
-    else:
-        vlm_client = None
-        log.warning(
-            "VLLM_BASE_URL not set — vLLM disabled; "
-            "all rollup summaries will use call_llm_stub"
-        )
+    embedding_client = get_embedding_client()
+    log.info("embedding model: %s", EMBEDDING_MODEL)
+
+    # Warm up model and ensure Qdrant collection exists before consuming jobs.
+    log.info("warming up embedding model...")
+    probe_vector = embedding_client.embed("warmup")
+    ensure_collection(vector_size=len(probe_vector))
+    log.info(
+        "Qdrant ready: %s collection=panoptic_summaries dim=%d",
+        QDRANT_URL, len(probe_vector),
+    )
+
+    vector_store = QdrantVectorStore()
 
     bootstrap_streams(r)
     worker_id = generate_worker_id()
 
-    run_worker(engine, r, worker_id, vlm_client)
+    run_worker(engine, r, worker_id, embedding_client, vector_store)
 
 
 if __name__ == "__main__":

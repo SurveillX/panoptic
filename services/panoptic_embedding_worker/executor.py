@@ -2,12 +2,12 @@
 embedding_upsert job executor.
 
 Steps:
-  1. Fetch summary row from vil_summaries by summary_id (from payload).
+  1. Fetch summary row from panoptic_summaries by summary_id (from payload).
   2. If embedding_status == 'complete': return succeeded (idempotent no-op).
   3. Build embedding input: text = summary field.
   4. Call embedding_client.embed(text) → dense vector.
   5. Upsert point into Qdrant (external write, idempotent on retry).
-  6. UPDATE vil_summaries SET embedding_status = 'complete'.
+  6. UPDATE panoptic_summaries SET embedding_status = 'complete'.
 
 All Postgres writes are within the caller's open transaction.
 No commit is issued here; the worker commits after release_job + lease check.
@@ -42,7 +42,7 @@ def run_embedding_job(
     Parameters
     ----------
     conn             : open SQLAlchemy connection (transaction in progress)
-    payload          : vil_jobs.payload dict — must contain 'summary_id'
+    payload          : panoptic_jobs.payload dict — must contain 'summary_id'
     worker_id        : worker identity (for logging)
     embedding_client : EmbeddingClient instance
 
@@ -61,7 +61,7 @@ def run_embedding_job(
             SELECT summary_id, serial_number, level, scope_id,
                    start_time, end_time, summary, key_events, confidence,
                    embedding_status
-              FROM vil_summaries
+              FROM panoptic_summaries
              WHERE summary_id = :summary_id
         """),
         {"summary_id": summary_id},
@@ -69,7 +69,7 @@ def run_embedding_job(
 
     if row is None:
         log.error(
-            "run_embedding_job: summary_id=%s not found in vil_summaries", summary_id
+            "run_embedding_job: summary_id=%s not found in panoptic_summaries", summary_id
         )
         return "failed_terminal"
 
@@ -138,7 +138,7 @@ def run_embedding_job(
     # ------------------------------------------------------------------
     conn.execute(
         text("""
-            UPDATE vil_summaries
+            UPDATE panoptic_summaries
                SET embedding_status = 'complete',
                    updated_at       = now()
              WHERE summary_id = :summary_id

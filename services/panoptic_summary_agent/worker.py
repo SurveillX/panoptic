@@ -1,5 +1,5 @@
 """
-vil-summary-agent worker — bucket_summary consumer.
+panoptic-summary-agent worker — bucket_summary consumer.
 
 Worker loop:
   consume_next → claim_job → LeaseHeartbeat → run_bucket_summary
@@ -25,7 +25,7 @@ import os
 
 from sqlalchemy import create_engine, text
 
-from services.vil_summary_agent.executor import ExecutionResult, run_bucket_summary
+from services.panoptic_summary_agent.executor import ExecutionResult, run_bucket_summary
 from shared.utils.leases import (
     LeaseHeartbeat,
     claim_job,
@@ -49,7 +49,7 @@ from shared.utils.streams import (
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
             job_row = conn.execute(
                 text("""
                     SELECT payload, attempt_count, max_attempts
-                      FROM vil_jobs
+                      FROM panoptic_jobs
                      WHERE job_id = :job_id
                 """),
                 {"job_id": job_id},
@@ -96,7 +96,7 @@ def _process_message(engine, r, msg, worker_id: str, keyframe_client, vlm_client
 
             if job_row is None:
                 log.error(
-                    "_process_message: job_id=%s missing from vil_jobs after claim",
+                    "_process_message: job_id=%s missing from panoptic_jobs after claim",
                     job_id,
                 )
                 return False  # should never happen; leave in PEL

@@ -1,17 +1,17 @@
 """
-SQLAlchemy 2.x ORM models for all VIL Postgres tables.
+SQLAlchemy 2.x ORM models for all Panoptic Postgres tables.
 
 All TIMESTAMP columns use TIMESTAMP WITH TIME ZONE (timezone=True).
 All JSONB columns default to '{}' or '[]' as appropriate.
 
 Tables:
-  vil_buckets          — canonical bucket records from Cognia
-  vil_jobs             — authoritative job state (leasing source of truth)
-  vil_job_history      — append-only transition log
-  vil_summaries        — summary records with versioning
-  vil_rollup_state     — rollup readiness tracking per parent window
-  vil_embedding_backlog — reconciliation helper for failed embeddings
-  vil_images           — trailer-pushed images with caption enrichment
+  panoptic_buckets          — canonical bucket records from Cognia
+  panoptic_jobs             — authoritative job state (leasing source of truth)
+  panoptic_job_history      — append-only transition log
+  panoptic_summaries        — summary records with versioning
+  panoptic_rollup_state     — rollup readiness tracking per parent window
+  panoptic_embedding_backlog — reconciliation helper for failed embeddings
+  panoptic_images           — trailer-pushed images with caption enrichment
 """
 
 from __future__ import annotations
@@ -36,12 +36,12 @@ class Base(DeclarativeBase):
 
 
 # ---------------------------------------------------------------------------
-# vil_buckets
+# panoptic_buckets
 # ---------------------------------------------------------------------------
 
 
-class VilBucket(Base):
-    __tablename__ = "vil_buckets"
+class PanopticBucket(Base):
+    __tablename__ = "panoptic_buckets"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     bucket_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -77,18 +77,18 @@ class VilBucket(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_buckets_sn_camera_start", "serial_number", "camera_id", "bucket_start_utc"),
-        Index("ix_vil_buckets_sn_start_desc", "serial_number", "bucket_start_utc"),
+        Index("ix_panoptic_buckets_sn_camera_start", "serial_number", "camera_id", "bucket_start_utc"),
+        Index("ix_panoptic_buckets_sn_start_desc", "serial_number", "bucket_start_utc"),
     )
 
 
 # ---------------------------------------------------------------------------
-# vil_jobs
+# panoptic_jobs
 # ---------------------------------------------------------------------------
 
 
-class VilJob(Base):
-    __tablename__ = "vil_jobs"
+class PanopticJob(Base):
+    __tablename__ = "panoptic_jobs"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     job_id: Mapped[str] = mapped_column(
@@ -125,19 +125,19 @@ class VilJob(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_jobs_state_lease", "state", "lease_expires_at"),
-        Index("ix_vil_jobs_sn_state", "serial_number", "state"),
-        Index("ix_vil_jobs_job_id", "job_id"),
+        Index("ix_panoptic_jobs_state_lease", "state", "lease_expires_at"),
+        Index("ix_panoptic_jobs_sn_state", "serial_number", "state"),
+        Index("ix_panoptic_jobs_job_id", "job_id"),
     )
 
 
 # ---------------------------------------------------------------------------
-# vil_job_history  (append-only)
+# panoptic_job_history  (append-only)
 # ---------------------------------------------------------------------------
 
 
-class VilJobHistory(Base):
-    __tablename__ = "vil_job_history"
+class PanopticJobHistory(Base):
+    __tablename__ = "panoptic_job_history"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     # Not a FK — history must survive job deletion / archival.
@@ -152,18 +152,18 @@ class VilJobHistory(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_job_history_job_id", "job_id"),
-        Index("ix_vil_job_history_sn_created", "serial_number", "created_at"),
+        Index("ix_panoptic_job_history_job_id", "job_id"),
+        Index("ix_panoptic_job_history_sn_created", "serial_number", "created_at"),
     )
 
 
 # ---------------------------------------------------------------------------
-# vil_summaries
+# panoptic_summaries
 # ---------------------------------------------------------------------------
 
 
-class VilSummary(Base):
-    __tablename__ = "vil_summaries"
+class PanopticSummary(Base):
+    __tablename__ = "panoptic_summaries"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     summary_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -216,21 +216,21 @@ class VilSummary(Base):
 
     __table_args__ = (
         Index(
-            "ix_vil_summaries_sn_level_scope_latest",
+            "ix_panoptic_summaries_sn_level_scope_latest",
             "serial_number", "level", "scope_id", "is_latest",
         ),
-        Index("ix_vil_summaries_embedding_status", "embedding_status"),
-        Index("ix_vil_summaries_sn_start_desc", "serial_number", "start_time"),
+        Index("ix_panoptic_summaries_embedding_status", "embedding_status"),
+        Index("ix_panoptic_summaries_sn_start_desc", "serial_number", "start_time"),
     )
 
 
 # ---------------------------------------------------------------------------
-# vil_rollup_state
+# panoptic_rollup_state
 # ---------------------------------------------------------------------------
 
 
-class VilRollupState(Base):
-    __tablename__ = "vil_rollup_state"
+class PanopticRollupState(Base):
+    __tablename__ = "panoptic_rollup_state"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     parent_key: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -255,18 +255,18 @@ class VilRollupState(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_rollup_state_sn_level_start", "serial_number", "level", "window_start"),
-        Index("ix_vil_rollup_state_sn_stale", "serial_number", "stale"),
+        Index("ix_panoptic_rollup_state_sn_level_start", "serial_number", "level", "window_start"),
+        Index("ix_panoptic_rollup_state_sn_stale", "serial_number", "stale"),
     )
 
 
 # ---------------------------------------------------------------------------
-# vil_embedding_backlog
+# panoptic_embedding_backlog
 # ---------------------------------------------------------------------------
 
 
-class VilEmbeddingBacklog(Base):
-    __tablename__ = "vil_embedding_backlog"
+class PanopticEmbeddingBacklog(Base):
+    __tablename__ = "panoptic_embedding_backlog"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     summary_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
@@ -281,18 +281,18 @@ class VilEmbeddingBacklog(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_embedding_backlog_next_attempt", "next_attempt_at"),
-        Index("ix_vil_embedding_backlog_sn_next", "serial_number", "next_attempt_at"),
+        Index("ix_panoptic_embedding_backlog_next_attempt", "next_attempt_at"),
+        Index("ix_panoptic_embedding_backlog_sn_next", "serial_number", "next_attempt_at"),
     )
 
 
 # ---------------------------------------------------------------------------
-# vil_images
+# panoptic_images
 # ---------------------------------------------------------------------------
 
 
-class VilImage(Base):
-    __tablename__ = "vil_images"
+class PanopticImage(Base):
+    __tablename__ = "panoptic_images"
 
     # Deterministic SHA256 — natural primary key.
     image_id: Mapped[str] = mapped_column(Text, primary_key=True)
@@ -353,8 +353,8 @@ class VilImage(Base):
     )
 
     __table_args__ = (
-        Index("ix_vil_images_scope_time", "scope_id", "bucket_start_utc"),
-        Index("ix_vil_images_sn_camera_time", "serial_number", "camera_id", "bucket_start_utc"),
-        Index("ix_vil_images_trigger_time", "trigger", "bucket_start_utc"),
-        Index("ix_vil_images_created_at", "created_at"),
+        Index("ix_panoptic_images_scope_time", "scope_id", "bucket_start_utc"),
+        Index("ix_panoptic_images_sn_camera_time", "serial_number", "camera_id", "bucket_start_utc"),
+        Index("ix_panoptic_images_trigger_time", "trigger", "bucket_start_utc"),
+        Index("ix_panoptic_images_created_at", "created_at"),
     )

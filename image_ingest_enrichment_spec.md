@@ -1,14 +1,14 @@
-## VIL Image Ingest + Enrichment Implementation Spec
+## Panoptic Image Ingest + Enrichment Implementation Spec
 
-This is the concrete spec for the **first VIL-side capability to build next**.
+This is the concrete spec for the **first Panoptic-side capability to build next**.
 
 It is based on the decisions already made in this chat:
 
-* trailers push **selected low-res images directly to VIL**
+* trailers push **selected low-res images directly to Panoptic**
 * selected images are a **central searchable visual corpus**
-* VIL stores the actual image, not just a reference
-* VIL creates an image metadata record
-* VIL enriches the image asynchronously with:
+* Panoptic stores the actual image, not just a reference
+* Panoptic creates an image metadata record
+* Panoptic enriches the image asynchronously with:
 
   * caption
   * caption embedding
@@ -17,7 +17,7 @@ It is based on the decisions already made in this chat:
 * unique camera identity is the composite:
 
   * `(serial_number, camera_id)` 
-* VIL already uses Postgres + Redis/job queue + Qdrant + worker patterns, and current summary/search direction is based on summary text embeddings in Qdrant.  
+* Panoptic already uses Postgres + Redis/job queue + Qdrant + worker patterns, and current summary/search direction is based on summary text embeddings in Qdrant.  
 
 ---
 
@@ -26,8 +26,8 @@ It is based on the decisions already made in this chat:
 Build only this:
 
 1. receive one pushed trailer image
-2. store JPEG locally on VIL
-3. create one `vil_images` Postgres row
+2. store JPEG locally on Panoptic
+3. create one `panoptic_images` Postgres row
 4. enqueue `image_caption`
 5. when caption completes, enqueue `caption_embed`
 6. store caption text in Postgres
@@ -47,7 +47,7 @@ Not in this build:
 
 ## 2. What this build enables
 
-After this build, VIL will support:
+After this build, Panoptic will support:
 
 * centralized storage of selected pushed low-res images
 * metadata filtering over images in Postgres
@@ -189,7 +189,7 @@ If `event_id` or deterministic `image_id` already exists:
 
 * return `200`
 * do not write duplicate file
-* do not create duplicate `vil_images` row
+* do not create duplicate `panoptic_images` row
 * do not enqueue duplicate jobs
 
 ---
@@ -198,18 +198,18 @@ If `event_id` or deterministic `image_id` already exists:
 
 ### Storage strategy
 
-Store actual JPEG on local VIL storage.
+Store actual JPEG on local Panoptic storage.
 
 ### Path convention
 
 ```text
-/data/vil/images/{serial_number}/{camera_id}/{YYYY}/{MM}/{DD}/{image_id}.jpg
+/data/panoptic/images/{serial_number}/{camera_id}/{YYYY}/{MM}/{DD}/{image_id}.jpg
 ```
 
 Example:
 
 ```text
-/data/vil/images/1422725077375/695e037f-c8bb-4aa6-a914-bd58bfb70ea7-default/2026/04/13/img_abc123.jpg
+/data/panoptic/images/1422725077375/695e037f-c8bb-4aa6-a914-bd58bfb70ea7-default/2026/04/13/img_abc123.jpg
 ```
 
 ### Behavior
@@ -224,12 +224,12 @@ No Azure/object storage in this build.
 
 ## 6. Postgres table
 
-Create `vil_images`.
+Create `panoptic_images`.
 
 ### Table definition
 
 ```sql
-CREATE TABLE vil_images (
+CREATE TABLE panoptic_images (
     image_id TEXT PRIMARY KEY,
 
     serial_number TEXT NOT NULL,
@@ -272,17 +272,17 @@ CREATE TABLE vil_images (
 ### Indexes
 
 ```sql
-CREATE INDEX ix_vil_images_scope_time
-    ON vil_images (scope_id, bucket_start_utc DESC);
+CREATE INDEX ix_panoptic_images_scope_time
+    ON panoptic_images (scope_id, bucket_start_utc DESC);
 
-CREATE INDEX ix_vil_images_sn_camera_time
-    ON vil_images (serial_number, camera_id, bucket_start_utc DESC);
+CREATE INDEX ix_panoptic_images_sn_camera_time
+    ON panoptic_images (serial_number, camera_id, bucket_start_utc DESC);
 
-CREATE INDEX ix_vil_images_trigger_time
-    ON vil_images (trigger, bucket_start_utc DESC);
+CREATE INDEX ix_panoptic_images_trigger_time
+    ON panoptic_images (trigger, bucket_start_utc DESC);
 
-CREATE INDEX ix_vil_images_created_at
-    ON vil_images (created_at DESC);
+CREATE INDEX ix_panoptic_images_created_at
+    ON panoptic_images (created_at DESC);
 ```
 
 ### Why these fields
@@ -305,7 +305,7 @@ When `POST /v1/trailer/image` succeeds:
 2. dedupe by `event_id` and/or deterministic `image_id`
 3. store JPEG to local disk
 4. inspect image for width/height/size
-5. insert one `vil_images` row with:
+5. insert one `panoptic_images` row with:
 
    * `caption_status = 'pending'`
    * `caption_embedding_status = 'pending'`
@@ -347,11 +347,11 @@ Generate a short caption / visual description for the stored image.
 
 ### Worker behavior
 
-1. load `vil_images` row by `image_id`
+1. load `panoptic_images` row by `image_id`
 2. read JPEG from `storage_path`
 3. call caption-capable VLM
 4. generate short caption
-5. update `vil_images`
+5. update `panoptic_images`
 6. enqueue `caption_embed`
 
 ### Caption output
@@ -404,11 +404,11 @@ Turn `caption_text` into a semantic search vector in Qdrant.
 
 ### Worker behavior
 
-1. load `vil_images` row
+1. load `panoptic_images` row
 2. require `caption_text`
 3. call text embedding model on `caption_text`
 4. upsert vector into Qdrant
-5. update `vil_images`
+5. update `panoptic_images`
 
 ### Qdrant collection
 
@@ -462,7 +462,7 @@ This is the required order:
 ```text
 image arrives
 → store JPEG
-→ insert vil_images row
+→ insert panoptic_images row
 → enqueue image_caption
 image_caption succeeds
 → enqueue caption_embed
@@ -513,13 +513,13 @@ This should follow existing repo patterns: workers, clients, schemas, DB models,
 
 ### New files likely needed
 
-* `infra/migrations/versions/00X_add_vil_images.py`
+* `infra/migrations/versions/00X_add_panoptic_images.py`
 * `shared/schemas/image.py`
-* `services/vil_image_ingest/` if you want a dedicated FastAPI service module, or add endpoint to existing webhook service if already created
-* `services/vil_image_caption_worker/executor.py`
-* `services/vil_image_caption_worker/worker.py`
-* `services/vil_caption_embed_worker/executor.py`
-* `services/vil_caption_embed_worker/worker.py`
+* `services/panoptic_image_ingest/` if you want a dedicated FastAPI service module, or add endpoint to existing webhook service if already created
+* `services/panoptic_image_caption_worker/executor.py`
+* `services/panoptic_image_caption_worker/worker.py`
+* `services/panoptic_caption_embed_worker/executor.py`
+* `services/panoptic_caption_embed_worker/worker.py`
 
 ### Modified files likely needed
 
@@ -528,7 +528,7 @@ This should follow existing repo patterns: workers, clients, schemas, DB models,
 * `shared/utils/streams.py`
 * `shared/utils/leases.py` if job claim/result typing needs update
 * `pyproject.toml` if new image libs/model client deps are needed
-* VIL webhook/router module to add `POST /v1/trailer/image`
+* Panoptic webhook/router module to add `POST /v1/trailer/image`
 * any central config module for:
 
   * image storage root
@@ -536,7 +536,7 @@ This should follow existing repo patterns: workers, clients, schemas, DB models,
   * caption model
   * embedding model / Qdrant collection
 
-If you already created `services/trailer_webhook/` in the earlier VIL plan, put the new image endpoint there rather than inventing another ingest surface. 
+If you already created `services/trailer_webhook/` in the earlier Panoptic plan, put the new image endpoint there rather than inventing another ingest surface. 
 
 ---
 
@@ -544,8 +544,8 @@ If you already created `services/trailer_webhook/` in the earlier VIL plan, put 
 
 These are **not open questions** for Claude to rediscover:
 
-* selected images are pushed directly to VIL, not Azure
-* actual image bytes are stored on VIL
+* selected images are pushed directly to Panoptic, not Azure
+* actual image bytes are stored on Panoptic
 * image record stores metadata + storage pointer
 * image caption is generated asynchronously
 * caption embedding is generated asynchronously after caption exists
@@ -571,7 +571,7 @@ These are **not open questions** for Claude to rediscover:
 1. POST one valid image + metadata to `POST /v1/trailer/image`
 2. verify `200 accepted`
 3. verify JPEG exists at expected local path
-4. verify one `vil_images` row exists
+4. verify one `panoptic_images` row exists
 5. verify:
 
    * `caption_status = 'pending'`
@@ -582,7 +582,7 @@ These are **not open questions** for Claude to rediscover:
 1. POST same image/metadata again
 2. verify `200 duplicate`
 3. verify no second file
-4. verify no second `vil_images` row
+4. verify no second `panoptic_images` row
 5. verify no duplicate jobs created
 
 ### C. Caption job
@@ -610,7 +610,7 @@ These are **not open questions** for Claude to rediscover:
 
 ### F. Metadata filtering sanity
 
-1. query `vil_images` by:
+1. query `panoptic_images` by:
 
    * `serial_number`
    * `camera_id`
@@ -628,7 +628,7 @@ These are **not open questions** for Claude to rediscover:
 ## 16. Final one-line flow
 
 ```text
-trailer pushes selected image → VIL stores JPEG + vil_images row → image_caption job → caption_embed job → image becomes semantically searchable
+trailer pushes selected image → Panoptic stores JPEG + panoptic_images row → image_caption job → caption_embed job → image becomes semantically searchable
 ```
 
 That is the full implementation spec for this slice.

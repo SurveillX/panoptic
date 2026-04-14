@@ -27,7 +27,7 @@ from shared.utils.streams import bootstrap_streams
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "8080"))
 MODEL_PROFILE: str = os.environ.get("MODEL_PROFILE", "default")

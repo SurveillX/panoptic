@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# Start all VIL services in the background with log files.
+# Start all Panoptic services in the background with log files.
 #
 # Usage:
 #   ./scripts/run_all.sh              (reads .env from project root)
 #   DATABASE_URL=... ./scripts/run_all.sh   (override .env values)
 #
-# Logs:  /tmp/vil-logs/<service>.log
+# Logs:  /tmp/panoptic-logs/<service>.log
 # Stop:  ./scripts/run_all.sh stop
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LOG_DIR="/tmp/vil-logs"
-PID_DIR="/tmp/vil-pids"
+LOG_DIR="/tmp/panoptic-logs"
+PID_DIR="/tmp/panoptic-pids"
 
 # Load .env if it exists
 if [ -f "$PROJECT_DIR/.env" ]; then
@@ -24,7 +24,7 @@ if [ -f "$PROJECT_DIR/.env" ]; then
 fi
 
 # Activate virtualenv if it exists
-VENV="${VENV:-$HOME/.virtualenvs/vil}"
+VENV="${VENV:-$HOME/.virtualenvs/panoptic}"
 if [ -f "$VENV/bin/activate" ]; then
     source "$VENV/bin/activate"
 fi
@@ -32,21 +32,21 @@ fi
 # All services and their module paths
 declare -A SERVICES=(
     [trailer_webhook]="services.trailer_webhook.server"
-    [vil_summary_agent]="services.vil_summary_agent.worker"
-    [vil_rollup_worker]="services.vil_rollup_worker.worker"
-    [vil_embedding_worker]="services.vil_embedding_worker.worker"
-    [vil_image_caption_worker]="services.vil_image_caption_worker.worker"
-    [vil_caption_embed_worker]="services.vil_caption_embed_worker.worker"
+    [panoptic_summary_agent]="services.panoptic_summary_agent.worker"
+    [panoptic_rollup_worker]="services.panoptic_rollup_worker.worker"
+    [panoptic_embedding_worker]="services.panoptic_embedding_worker.worker"
+    [panoptic_image_caption_worker]="services.panoptic_image_caption_worker.worker"
+    [panoptic_caption_embed_worker]="services.panoptic_caption_embed_worker.worker"
 )
 
 # Ordered startup (webhook first, then workers)
 STARTUP_ORDER=(
     trailer_webhook
-    vil_summary_agent
-    vil_rollup_worker
-    vil_embedding_worker
-    vil_image_caption_worker
-    vil_caption_embed_worker
+    panoptic_summary_agent
+    panoptic_rollup_worker
+    panoptic_embedding_worker
+    panoptic_image_caption_worker
+    panoptic_caption_embed_worker
 )
 
 _start() {
@@ -58,7 +58,7 @@ _start() {
         exit 1
     fi
 
-    echo "Starting VIL services..."
+    echo "Starting Panoptic services..."
     echo "  Logs: $LOG_DIR/"
     echo ""
 
@@ -86,7 +86,7 @@ _start() {
 }
 
 _stop() {
-    echo "Stopping VIL services..."
+    echo "Stopping Panoptic services..."
     for name in "${STARTUP_ORDER[@]}"; do
         pid_file="$PID_DIR/$name.pid"
         if [ -f "$pid_file" ]; then
@@ -105,7 +105,7 @@ _stop() {
 }
 
 _status() {
-    echo "VIL service status:"
+    echo "Panoptic service status:"
     for name in "${STARTUP_ORDER[@]}"; do
         pid_file="$PID_DIR/$name.pid"
         if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then

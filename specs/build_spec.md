@@ -1,8 +1,8 @@
-# SurveillX VIL Build Spec v1.0
+# SurveillX Panoptic Build Spec v1.0
 
 ## Purpose
 
-This document translates the VIL Master Design Specification v1.0 into a concrete implementation plan.
+This document translates the Panoptic Master Design Specification v1.0 into a concrete implementation plan.
 
 It is intentionally biased toward:
 - fast first implementation
@@ -37,7 +37,7 @@ Do **not** start with:
 
 ## 2.1 New Services
 
-### A. `vil-orchestrator`
+### A. `panoptic-orchestrator`
 Owns:
 - intake of finalized bucket events
 - job creation
@@ -45,7 +45,7 @@ Owns:
 - recompute scheduling
 - embedding reconciliation scheduling
 
-### B. `vil-summary-agent`
+### B. `panoptic-summary-agent`
 Owns:
 - lease + execute summary jobs
 - fetch frames / thumbnails
@@ -55,7 +55,7 @@ Owns:
 - write summary records
 - enqueue follow-on jobs
 
-### C. `vil-embedding-worker`
+### C. `panoptic-embedding-worker`
 Owns:
 - embedding generation
 - upsert into semantic store
@@ -101,9 +101,9 @@ Use a new top-level workspace or service directory, for example:
 ```text
 surveillx-vil/
   services/
-    vil-orchestrator/
-    vil-summary-agent/
-    vil-embedding-worker/
+    panoptic-orchestrator/
+    panoptic-summary-agent/
+    panoptic-embedding-worker/
   shared/
     schemas/
     clients/
@@ -114,8 +114,8 @@ surveillx-vil/
     migrations/
     compose/
   docs/
-    surveillx_vil_master_design_v1_0.md
-    surveillx_vil_build_spec_v1_0.md
+    panoptic_master_design_v1_0.md
+    panoptic_build_spec_v1_0.md
 ```
 
 If you prefer to keep this in an existing repo, preserve the same logical split.
@@ -282,20 +282,20 @@ updated_at: datetime
 
 Create migrations for these tables first.
 
-## 6.1 `vil_buckets`
+## 6.1 `panoptic_buckets`
 Stores canonical bucket records from Cognia.
 
-## 6.2 `vil_jobs`
+## 6.2 `panoptic_jobs`
 Stores current authoritative job state.
 
-## 6.3 `vil_job_history`
+## 6.3 `panoptic_job_history`
 Optional but strongly recommended.
 Append-only record of transitions and failures.
 
-## 6.4 `vil_summaries`
+## 6.4 `panoptic_summaries`
 Stores summary records.
 
-## 6.5 `vil_rollup_state`
+## 6.5 `panoptic_rollup_state`
 Tracks readiness of parent windows.
 
 Suggested fields:
@@ -310,8 +310,8 @@ Suggested fields:
 - stale
 - last_rollup_summary_id
 
-## 6.6 `vil_embedding_backlog`
-Optional helper table if you do not want to derive from `vil_summaries`.
+## 6.6 `panoptic_embedding_backlog`
+Optional helper table if you do not want to derive from `panoptic_summaries`.
 
 ---
 
@@ -320,19 +320,19 @@ Optional helper table if you do not want to derive from `vil_summaries`.
 ## 7.1 Streams
 
 ```text
-vil:jobs:bucket_summary
-vil:jobs:rollup_summary
-vil:jobs:embedding_upsert
-vil:jobs:recompute
+panoptic:jobs:bucket_summary
+panoptic:jobs:rollup_summary
+panoptic:jobs:embedding_upsert
+panoptic:jobs:recompute
 ```
 
 ## 7.2 DLQ Streams
 
 ```text
-vil:dlq:bucket_summary
-vil:dlq:rollup_summary
-vil:dlq:embedding_upsert
-vil:dlq:recompute
+panoptic:dlq:bucket_summary
+panoptic:dlq:rollup_summary
+panoptic:dlq:embedding_upsert
+panoptic:dlq:recompute
 ```
 
 ## 7.3 Consumer Groups
@@ -340,9 +340,9 @@ vil:dlq:recompute
 Create one consumer group per worker type, for example:
 
 ```text
-group: vil-summary-workers
-group: vil-embedding-workers
-group: vil-recompute-workers
+group: panoptic-summary-workers
+group: panoptic-embedding-workers
+group: panoptic-recompute-workers
 ```
 
 ## 7.4 Lease / Reclaim Protocol
@@ -355,7 +355,7 @@ shared/utils/leases.py
 
 Rules:
 - claim message from stream
-- write authoritative lease state to Postgres `vil_jobs`
+- write authoritative lease state to Postgres `panoptic_jobs`
 - lease TTL = 120 seconds
 - renew every 30 seconds while running
 - reclaimer runs every 30 seconds:
@@ -506,7 +506,7 @@ Do not mix cron and event-driven logic for v1.
 
 ### Mechanism
 On L1 or L2 completion:
-- update `vil_rollup_state`
+- update `panoptic_rollup_state`
 - compute readiness
 - if readiness threshold reached and no active rollup job exists:
   - enqueue `rollup_summary`
@@ -769,7 +769,7 @@ Exit criteria:
 2. Implement Redis Streams producer/consumer library with lease TTL + reclaim
 3. Add canonical bucket emission contract to Cognia Aggregator
 4. Build minimal Keyframe API auth + timestamp-tolerant lookup
-5. Build `vil-summary-agent` with metadata-only path first
+5. Build `panoptic-summary-agent` with metadata-only path first
 6. Add prompt/version plumbing
 7. Build embedding worker + reconciliation
 8. Add rollup readiness table and L2 trigger path

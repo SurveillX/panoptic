@@ -2,12 +2,12 @@
 caption_embed job executor.
 
 Steps:
-  1. Fetch vil_images row by image_id (from payload).
+  1. Fetch panoptic_images row by image_id (from payload).
   2. If caption_embedding_status == 'success': return succeeded (idempotent no-op).
   3. Require caption_text exists and caption_status == 'success'.
   4. Call embedding_client.embed(caption_text) → dense vector.
   5. Upsert point into Qdrant image_caption_vectors collection.
-  6. UPDATE vil_images SET caption_embedding_status = 'success'.
+  6. UPDATE panoptic_images SET caption_embedding_status = 'success'.
 
 All Postgres writes are within the caller's open transaction.
 No commit is issued here; the worker commits after release_job + lease check.
@@ -54,7 +54,7 @@ def run_caption_embed_job(
                    bucket_start_utc, bucket_end_utc, captured_at_utc,
                    trigger, caption_status, caption_text,
                    caption_embedding_status
-              FROM vil_images
+              FROM panoptic_images
              WHERE image_id = :image_id
         """),
         {"image_id": image_id},
@@ -126,7 +126,7 @@ def run_caption_embed_job(
     # ------------------------------------------------------------------
     conn.execute(
         text("""
-            UPDATE vil_images
+            UPDATE panoptic_images
                SET caption_embedding_status    = 'success',
                    caption_embedding_model     = :embedding_model,
                    caption_embedding_vector_id = :vector_id,

@@ -1,7 +1,7 @@
 """
 Cognia bucket intake — library layer.
 
-Called by the VIL orchestrator HTTP endpoint when Cognia POSTs a finalized
+Called by the Panoptic orchestrator HTTP endpoint when Cognia POSTs a finalized
 bucket record.  This module contains no HTTP handling; it is a pure intake
 function that the endpoint calls after parsing the request body.
 
@@ -9,15 +9,15 @@ Intake sequence (strict ordering):
   1. Validate payload against BucketRecord schema
   2. Recompute bucket_id from payload fields; reject if mismatch
   3. Recompute activity_score from activity_components + camera history
-  4. Upsert into vil_buckets            (idempotent — ON CONFLICT DO NOTHING)
-  5. Insert into vil_jobs               (idempotent — ON CONFLICT (job_key) DO NOTHING)
+  4. Upsert into panoptic_buckets            (idempotent — ON CONFLICT DO NOTHING)
+  5. Insert into panoptic_jobs               (idempotent — ON CONFLICT (job_key) DO NOTHING)
   6. Commit transaction
   7. enqueue_job to Redis Stream        (only after commit; only if job was new)
 
 Upsert behaviour:
   - bucket_status = 'late_finalized': overwrites the existing row (all fields).
   - All other statuses: ON CONFLICT DO NOTHING — first write wins.
-  - Duplicate job: vil_jobs INSERT conflicts on UNIQUE(job_key) — no duplicate.
+  - Duplicate job: panoptic_jobs INSERT conflicts on UNIQUE(job_key) — no duplicate.
   - enqueue_job is called only when a new job row was inserted.
   - If commit succeeds but enqueue_job fails: job stays 'pending' in Postgres;
     the orchestrator's pending-job scan will re-enqueue it.
@@ -88,7 +88,7 @@ class BucketIdMismatchError(ValueError):
 class IngestResult:
     bucket_id: str
     job_id: str | None       # UUID string; None if job already existed
-    activity_score: float    # VIL-recomputed score stored in vil_buckets
+    activity_score: float    # Panoptic-recomputed score stored in panoptic_buckets
     # 'inserted'             — new bucket row created
     # 'late_finalized_update' — existing row overwritten (bucket_status=late_finalized)
     # 'duplicate'            — row already existed, no change made
@@ -118,7 +118,7 @@ def ingest_bucket(
         SQLAlchemy Engine (sync).  This function owns its connection and
         transaction; callers do not manage the transaction.
     r:
-        Central VIL Redis client (NOT an edge Redis).
+        Central Panoptic Redis client (NOT an edge Redis).
     raw_payload:
         Pre-parsed JSON dict from the HTTP request body.
     model_profile:
@@ -185,7 +185,7 @@ def ingest_bucket(
                 bucket.activity_components, stream_coverage_ok=stream_ok
             )
 
-        # Step 4: Upsert vil_buckets.
+        # Step 4: Upsert panoptic_buckets.
         # late_finalized overwrites all fields — the bucket arrived late but
         # carries authoritative data.  All other statuses: first write wins.
         # RETURNING (xmax = 0) distinguishes fresh insert from update.
@@ -194,7 +194,7 @@ def ingest_bucket(
         print("INGEST PARAM markers:", params.get("event_markers"))
         bucket_row = conn.execute(
             text("""
-                INSERT INTO vil_buckets (
+                INSERT INTO panoptic_buckets (
                     bucket_id, serial_number, camera_id,
                     bucket_start_utc, bucket_end_utc, bucket_status,
                     schema_version, detection_hash,
@@ -230,7 +230,7 @@ def ingest_bucket(
         else:
             bucket_action = "late_finalized_update"
 
-        # Step 5: Insert vil_jobs — idempotent via UNIQUE(job_key)
+        # Step 5: Insert panoptic_jobs — idempotent via UNIQUE(job_key)
         job_key = make_bucket_summary_key(
             bucket.bucket_id, model_profile, prompt_version
         )
@@ -238,7 +238,7 @@ def ingest_bucket(
 
         job_row = conn.execute(
             text("""
-                INSERT INTO vil_jobs (
+                INSERT INTO panoptic_jobs (
                     job_id, job_key, serial_number, job_type,
                     priority, state, attempt_count, max_attempts, payload
                 ) VALUES (
@@ -314,7 +314,7 @@ def _get_camera_stats(conn, serial_number: str, camera_id: str) -> CameraStats |
     rows = conn.execute(
         text("""
             SELECT activity_components
-              FROM vil_buckets
+              FROM panoptic_buckets
              WHERE serial_number = :serial_number
                AND camera_id = :camera_id
              ORDER BY bucket_start_utc DESC
@@ -392,7 +392,7 @@ def _extract_activity_components(components: dict[str, float]) -> ActivityCompon
 
 
 def _bucket_params(bucket: BucketRecord, activity_score: float) -> dict:
-    """Parameter dict for the vil_buckets INSERT."""
+    """Parameter dict for the panoptic_buckets INSERT."""
     return {
         "bucket_id":          bucket.bucket_id,
         "serial_number":          bucket.serial_number,
@@ -436,10 +436,10 @@ def _job_payload_json(
     prompt_version: str,
 ) -> str:
     """
-    JSON string for vil_jobs.payload.
+    JSON string for panoptic_jobs.payload.
 
     Contains everything the Summary Agent needs to identify the work unit.
-    Full bucket data is fetched from vil_buckets by the agent at execution time.
+    Full bucket data is fetched from panoptic_buckets by the agent at execution time.
     """
     return json.dumps({
         "bucket_id":      bucket.bucket_id,

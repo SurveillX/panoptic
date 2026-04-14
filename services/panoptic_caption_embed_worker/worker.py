@@ -1,5 +1,5 @@
 """
-vil-caption-embed-worker — caption_embed consumer.
+panoptic-caption-embed-worker — caption_embed consumer.
 
 Worker loop:
   consume_next → claim_job → LeaseHeartbeat → run_caption_embed_job
@@ -23,7 +23,7 @@ import os
 
 from sqlalchemy import create_engine, text
 
-from services.vil_caption_embed_worker.executor import run_caption_embed_job
+from services.panoptic_caption_embed_worker.executor import run_caption_embed_job
 from shared.clients.embedding import EMBEDDING_MODEL, get_embedding_client
 from shared.clients.qdrant import QDRANT_URL, ensure_image_caption_collection
 from shared.utils.leases import (
@@ -45,7 +45,7 @@ from shared.utils.streams import (
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/panoptic")
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def _process_message(engine, r, msg, worker_id: str, embedding_client) -> bool:
             job_row = conn.execute(
                 text("""
                     SELECT payload, attempt_count, max_attempts
-                      FROM vil_jobs
+                      FROM panoptic_jobs
                      WHERE job_id = :job_id
                 """),
                 {"job_id": job_id},

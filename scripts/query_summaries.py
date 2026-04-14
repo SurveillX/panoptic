@@ -5,7 +5,7 @@ import httpx
 from shared.clients.embedding import EmbeddingClient
 
 QDRANT_URL = "http://localhost:6333"
-COLLECTION = "vil_summaries"
+COLLECTION = "panoptic_summaries"
 
 SIGNAL_MAP = {
     "spike":            "spike in activity",

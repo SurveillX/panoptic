@@ -6,8 +6,8 @@ Endpoints:
   POST /v1/trailer/image               — receive pushed images from trailers
   GET  /health                         — health check
 
-Bucket dedup: Redis SETNX on vil:webhook:seen:{event_id} with 24h TTL.
-Image dedup:  Postgres vil_images.image_id PK (deterministic SHA256).
+Bucket dedup: Redis SETNX on panoptic:webhook:seen:{event_id} with 24h TTL.
+Image dedup:  Postgres panoptic_images.image_id PK (deterministic SHA256).
 Aggregation: fragments stored in Redis hashes; background finalizer
 runs every 10s and calls ingest_bucket() when a hash goes quiet.
 """
@@ -42,14 +42,14 @@ _DEDUP_TTL_SECONDS = 86400  # 24 hours
 _FINALIZER_INTERVAL_SECONDS = 10
 
 # Image ingest configuration
-IMAGE_STORAGE_ROOT: str = os.environ.get("IMAGE_STORAGE_ROOT", "/data/vil/images")
+IMAGE_STORAGE_ROOT: str = os.environ.get("IMAGE_STORAGE_ROOT", "/data/panoptic/images")
 IMAGE_MAX_SIZE_BYTES: int = int(os.environ.get("IMAGE_MAX_SIZE_BYTES", "2097152"))
 
 
 def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_version: str = "v1") -> FastAPI:
     """Create and return the FastAPI app with background finalizer."""
 
-    app = FastAPI(title="VIL Trailer Webhook", version="1.0")
+    app = FastAPI(title="Panoptic Trailer Webhook", version="1.0")
     _finalizer_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
@@ -119,7 +119,7 @@ def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_ve
             )
 
         # Dedup by event_id
-        dedup_key = f"vil:webhook:seen:{payload.event_id}"
+        dedup_key = f"panoptic:webhook:seen:{payload.event_id}"
         is_new = r.set(dedup_key, "1", nx=True, ex=_DEDUP_TTL_SECONDS)
         if not is_new:
             log.debug("webhook: duplicate event_id=%s", payload.event_id)
@@ -234,7 +234,7 @@ def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_ve
         with engine.connect() as conn:
             result = conn.execute(
                 sa_text("""
-                    INSERT INTO vil_images (
+                    INSERT INTO panoptic_images (
                         image_id, event_id,
                         serial_number, camera_id, scope_id,
                         bucket_start_utc, bucket_end_utc,
@@ -301,7 +301,7 @@ def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_ve
                 )
                 # Cleanup: delete the just-inserted row.
                 conn.execute(
-                    sa_text("DELETE FROM vil_images WHERE image_id = :image_id"),
+                    sa_text("DELETE FROM panoptic_images WHERE image_id = :image_id"),
                     {"image_id": image_id},
                 )
                 conn.commit()
@@ -314,7 +314,7 @@ def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_ve
             job_key = make_image_caption_key(image_id)
             job_id_result = conn.execute(
                 sa_text("""
-                    INSERT INTO vil_jobs (
+                    INSERT INTO panoptic_jobs (
                         job_key, serial_number, job_type, payload
                     ) VALUES (
                         :job_key, :serial_number, 'image_caption',

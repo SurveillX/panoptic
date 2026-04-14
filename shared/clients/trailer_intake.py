@@ -9,7 +9,7 @@ This module:
      ingest_bucket() to enter the existing pipeline.
 
 Late-arriving fragments (after finalization):
-  A done marker (vil:agg:done:{sn}:{cam}:{start}) is set at finalization
+  A done marker (panoptic:agg:done:{sn}:{cam}:{start}) is set at finalization
   with 1h TTL.  store_fragment() checks for this marker BEFORE creating any
   Redis state.  Late fragments are discarded with a warning log.
 
@@ -36,9 +36,9 @@ log = logging.getLogger(__name__)
 SCHEMA_VERSION = 2
 
 # Redis key prefixes
-_AGG_PREFIX = "vil:agg"
-_AGG_ACTIVE_SET = "vil:agg:active"
-_AGG_DONE_PREFIX = "vil:agg:done"
+_AGG_PREFIX = "panoptic:agg"
+_AGG_ACTIVE_SET = "panoptic:agg:active"
+_AGG_DONE_PREFIX = "panoptic:agg:done"
 
 # Finalization timing
 FINALIZE_QUIET_SECONDS = 30
@@ -157,7 +157,7 @@ def _finalize_one(
     """
     Finalize a single aggregation hash: transform + ingest + cleanup.
     """
-    # Parse key: vil:agg:{sn}:{cam}:{bucket_start_iso}
+    # Parse key: panoptic:agg:{sn}:{cam}:{bucket_start_iso}
     parts = agg_key.split(":", 4)
     # parts = ["vil", "agg", sn, cam, bucket_start_iso]
     sn = parts[2]

@@ -1,4 +1,4 @@
-# SurveillX Visual Intelligence Layer (VIL)
+# SurveillX Visual Intelligence Layer (Panoptic)
 
 ## Master Design Specification v1.0
 
@@ -64,10 +64,10 @@ Semantic Store (Qdrant + metadata DB)
 * **Redis Streams (v1)**
 * Streams:
 
-  * `vil:jobs:bucket_summary`
-  * `vil:jobs:rollup_summary`
-  * `vil:jobs:embedding_upsert`
-  * `vil:jobs:recompute`
+  * `panoptic:jobs:bucket_summary`
+  * `panoptic:jobs:rollup_summary`
+  * `panoptic:jobs:embedding_upsert`
+  * `panoptic:jobs:recompute`
 * Enable **AOF persistence** + snapshots
 
 ---

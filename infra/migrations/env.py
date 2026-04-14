@@ -29,7 +29,7 @@ def _get_url() -> str:
     if not url:
         raise RuntimeError(
             "DATABASE_URL environment variable is not set. "
-            "Example: DATABASE_URL=postgresql://vil:vil@localhost/vil alembic upgrade head"
+            "Example: DATABASE_URL=postgresql://panoptic:panoptic@localhost/panoptic alembic upgrade head"
         )
     return url
 

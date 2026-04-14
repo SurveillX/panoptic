@@ -1,10 +1,10 @@
 """
-Central VIL Redis client.
+Central Panoptic Redis client.
 
 Connects ONLY to the central cloud Redis instance (REDIS_URL).
 This is NOT the Jetson edge Redis — never use this client for edge operations.
 
-All VIL job queue keys are namespaced under vil:*
+All Panoptic job queue keys are namespaced under panoptic:*
 
 Thread-safe: uses a connection pool shared across the process.
 For multi-machine deployments, each machine gets its own pool pointed
