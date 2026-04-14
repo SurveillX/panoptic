@@ -40,17 +40,21 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 STREAM_FOR_JOB_TYPE: dict[str, str] = {
-    "bucket_summary":   "vil:jobs:bucket_summary",
-    "rollup_summary":   "vil:jobs:rollup_summary",
-    "embedding_upsert": "vil:jobs:embedding_upsert",
+    "bucket_summary":    "vil:jobs:bucket_summary",
+    "rollup_summary":    "vil:jobs:rollup_summary",
+    "embedding_upsert":  "vil:jobs:embedding_upsert",
     "recompute_summary": "vil:jobs:recompute",
+    "image_caption":     "vil:jobs:image_caption",
+    "caption_embed":     "vil:jobs:caption_embed",
 }
 
 DLQ_FOR_JOB_TYPE: dict[str, str] = {
-    "bucket_summary":   "vil:dlq:bucket_summary",
-    "rollup_summary":   "vil:dlq:rollup_summary",
-    "embedding_upsert": "vil:dlq:embedding_upsert",
+    "bucket_summary":    "vil:dlq:bucket_summary",
+    "rollup_summary":    "vil:dlq:rollup_summary",
+    "embedding_upsert":  "vil:dlq:embedding_upsert",
     "recompute_summary": "vil:dlq:recompute",
+    "image_caption":     "vil:dlq:image_caption",
+    "caption_embed":     "vil:dlq:caption_embed",
 }
 
 # Each stream has exactly one consumer group.
@@ -59,6 +63,8 @@ CONSUMER_GROUP_FOR_STREAM: dict[str, str] = {
     "vil:jobs:rollup_summary":   "vil-summary-workers",
     "vil:jobs:embedding_upsert": "vil-embedding-workers",
     "vil:jobs:recompute":        "vil-recompute-workers",
+    "vil:jobs:image_caption":    "vil-image-caption-workers",
+    "vil:jobs:caption_embed":    "vil-caption-embed-workers",
 }
 
 # Convenience: group name by job type.

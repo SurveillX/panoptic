@@ -24,7 +24,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-JobType = Literal["bucket_summary", "rollup_summary", "embedding_upsert", "recompute_summary"]
+JobType = Literal[
+    "bucket_summary", "rollup_summary", "embedding_upsert", "recompute_summary",
+    "image_caption", "caption_embed",
+]
 JobState = Literal[
     "pending",
     "leased",
@@ -68,6 +71,14 @@ def make_recompute_summary_key(
     summary_id: str, model_profile: str, prompt_version: str
 ) -> str:
     return f"recompute_summary:{summary_id}:{model_profile}:{prompt_version}"
+
+
+def make_image_caption_key(image_id: str) -> str:
+    return f"image_caption:{image_id}"
+
+
+def make_caption_embed_key(image_id: str) -> str:
+    return f"caption_embed:{image_id}"
 
 
 # ---------------------------------------------------------------------------

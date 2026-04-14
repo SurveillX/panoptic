@@ -63,6 +63,48 @@ def ensure_collection(vector_size: int) -> None:
     log.info("created Qdrant collection %s size=%d", _COLLECTION, vector_size)
 
 
+_IMAGE_CAPTION_COLLECTION = "image_caption_vectors"
+
+
+def ensure_image_caption_collection(vector_size: int) -> None:
+    """
+    Create the image_caption_vectors collection if it does not exist.
+
+    Safe to call on every startup — idempotent.
+    """
+    url = f"{QDRANT_URL}/collections/{_IMAGE_CAPTION_COLLECTION}"
+    resp = httpx.get(url, timeout=_TIMEOUT)
+    if resp.status_code == 200:
+        log.debug("Qdrant collection %s already exists", _IMAGE_CAPTION_COLLECTION)
+        return
+    create_resp = httpx.put(
+        url,
+        json={"vectors": {"size": vector_size, "distance": "Cosine"}},
+        timeout=_TIMEOUT,
+    )
+    create_resp.raise_for_status()
+    log.info("created Qdrant collection %s size=%d", _IMAGE_CAPTION_COLLECTION, vector_size)
+
+
+def upsert_image_caption_point(image_id: str, vector: list[float], payload: dict) -> str:
+    """
+    Upsert a single point into the image_caption_vectors collection.
+
+    Returns the Qdrant point ID (UUID string).
+    Idempotent — upserting the same image_id overwrites the previous point.
+    """
+    qdrant_id = str(_uuid.UUID(image_id[:32]))
+    url = f"{QDRANT_URL}/collections/{_IMAGE_CAPTION_COLLECTION}/points"
+    resp = httpx.put(
+        url,
+        json={"points": [{"id": qdrant_id, "vector": vector, "payload": payload}]},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    log.debug("upserted Qdrant image caption point image_id=%s qdrant_id=%s", image_id, qdrant_id)
+    return qdrant_id
+
+
 def upsert_point(summary_id: str, vector: list[float], payload: dict) -> None:
     """
     Upsert a single point into the vil_summaries collection.

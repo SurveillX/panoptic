@@ -1,0 +1,274 @@
+"""
+vil-image-caption-worker — image_caption consumer.
+
+Worker loop:
+  consume_next → claim_job → LeaseHeartbeat → run_image_caption_job
+  → chain caption_embed job (if new caption) → release_job → verify lease
+  → commit → enqueue caption_embed (post-commit) → enqueue_dlq (if terminal) → ACK
+
+ACK contract (strictly enforced):
+  claim fails           → no ACK
+  lease stolen          → no ACK, no commit
+  lease lost pre-commit → no ACK, no commit
+  succeeded / retry_wait → release_job → verify lease → commit → ACK
+  failed_terminal       → release_job → verify lease → commit
+                          → enqueue_dlq → ACK
+
+Postgres commit is always durable before any Redis write.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+
+from sqlalchemy import create_engine, text
+
+from services.vil_image_caption_worker.executor import run_image_caption_job
+from shared.clients.vlm import get_vlm_client
+from shared.schemas.job import make_caption_embed_key
+from shared.utils.leases import (
+    LeaseHeartbeat,
+    claim_job,
+    compute_retry_delay,
+    generate_worker_id,
+    release_job,
+)
+from shared.utils.redis_client import get_redis_client
+from shared.utils.streams import (
+    GROUP_FOR_JOB_TYPE,
+    STREAM_FOR_JOB_TYPE,
+    ack_message,
+    bootstrap_streams,
+    consume_next,
+    enqueue_dlq,
+    enqueue_job,
+)
+
+log = logging.getLogger(__name__)
+
+DATABASE_URL: str = os.environ.get("DATABASE_URL", "postgresql://localhost/vil")
+
+
+# ---------------------------------------------------------------------------
+# Message processor
+# ---------------------------------------------------------------------------
+
+def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
+    """
+    Process one stream message end-to-end.
+
+    Returns True if the message was ACK'd.
+    Returns False if not ACK'd (message stays in PEL for reclaimer).
+    """
+    job_id = msg.job_id
+
+    # ------------------------------------------------------------------
+    # Step 1: Claim job
+    # ------------------------------------------------------------------
+    with engine.connect() as conn:
+        claim = claim_job(conn, job_id=job_id, worker_id=worker_id)
+        conn.commit()
+
+    if claim is None:
+        log.debug("_process_message: job_id=%s not claimable — no ACK", job_id)
+        return False
+
+    # ------------------------------------------------------------------
+    # Steps 2–N: execute within a single connection + heartbeat
+    # ------------------------------------------------------------------
+    job_state = "failed_terminal"
+    last_error: str | None = None
+    should_chain = False
+    chain_job_id: str | None = None
+
+    with engine.connect() as conn:
+        with LeaseHeartbeat(engine, job_id, worker_id) as hb:
+
+            job_row = conn.execute(
+                text("""
+                    SELECT payload, attempt_count, max_attempts
+                      FROM vil_jobs
+                     WHERE job_id = :job_id
+                """),
+                {"job_id": job_id},
+            ).fetchone()
+
+            if job_row is None:
+                log.error("_process_message: job_id=%s missing after claim", job_id)
+                return False
+
+            try:
+                job_state, should_chain = run_image_caption_job(
+                    conn,
+                    payload=job_row.payload,
+                    worker_id=worker_id,
+                    vlm_client=vlm_client,
+                )
+            except Exception as exc:
+                log.exception(
+                    "_process_message: unexpected error job_id=%s: %s", job_id, exc
+                )
+                job_state = (
+                    "failed_terminal"
+                    if job_row.attempt_count >= job_row.max_attempts
+                    else "retry_wait"
+                )
+                last_error = str(exc)[:1000]
+                should_chain = False
+
+            # -- Chain: create caption_embed job if caption succeeded --
+            if should_chain and job_state == "succeeded":
+                image_id = job_row.payload["image_id"]
+                chain_key = make_caption_embed_key(image_id)
+                chain_result = conn.execute(
+                    text("""
+                        INSERT INTO vil_jobs (
+                            job_key, serial_number, job_type, payload
+                        ) VALUES (
+                            :job_key, :serial_number, 'caption_embed',
+                            CAST(:payload AS jsonb)
+                        )
+                        ON CONFLICT (job_key) DO NOTHING
+                        RETURNING job_id
+                    """),
+                    {
+                        "job_key": chain_key,
+                        "serial_number": claim.serial_number,
+                        "payload": json.dumps({
+                            "image_id": image_id,
+                            "serial_number": claim.serial_number,
+                        }),
+                    },
+                )
+                chain_row = chain_result.fetchone()
+                chain_job_id = str(chain_row.job_id) if chain_row else None
+
+            retry_delay = (
+                compute_retry_delay(job_row.attempt_count)
+                if job_state == "retry_wait"
+                else None
+            )
+            released = release_job(
+                conn,
+                job_id=job_id,
+                worker_id=worker_id,
+                new_state=job_state,
+                last_error=last_error,
+                retry_after_seconds=retry_delay,
+            )
+
+            if not released:
+                log.warning(
+                    "_process_message: lease stolen before release job_id=%s — abort",
+                    job_id,
+                )
+                conn.rollback()
+                return False
+
+            if not hb.is_valid():
+                log.warning(
+                    "_process_message: lease lost pre-commit job_id=%s — abort", job_id
+                )
+                conn.rollback()
+                return False
+
+            conn.commit()
+
+    # ------------------------------------------------------------------
+    # Post-commit: enqueue caption_embed if chained
+    # ------------------------------------------------------------------
+    if chain_job_id is not None:
+        try:
+            enqueue_job(
+                r,
+                job_type="caption_embed",
+                job_id=chain_job_id,
+                serial_number=claim.serial_number,
+            )
+        except Exception as exc:
+            log.error(
+                "_process_message: caption_embed enqueue failed job_id=%s: %s "
+                "— job exists in Postgres, reclaimer will pick it up",
+                chain_job_id, exc,
+            )
+
+    # ------------------------------------------------------------------
+    # Post-commit: DLQ if terminal
+    # ------------------------------------------------------------------
+    if job_state == "failed_terminal":
+        try:
+            enqueue_dlq(
+                r,
+                job_type="image_caption",
+                job_id=job_id,
+                serial_number=claim.serial_number,
+                reason=last_error or "unknown error",
+            )
+        except Exception as exc:
+            log.error(
+                "_process_message: DLQ enqueue failed job_id=%s: %s", job_id, exc
+            )
+
+    ack_message(r, stream=msg.stream, group=msg.group, entry_id=msg.entry_id)
+    log.info("_process_message: completed job_id=%s state=%s", job_id, job_state)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Worker loop
+# ---------------------------------------------------------------------------
+
+def run_worker(engine, r, worker_id: str, vlm_client) -> None:
+    """
+    Main worker loop: block-reads and processes image_caption jobs indefinitely.
+    """
+    stream = STREAM_FOR_JOB_TYPE["image_caption"]
+    group = GROUP_FOR_JOB_TYPE["image_caption"]
+
+    log.info(
+        "worker starting worker_id=%s stream=%s group=%s",
+        worker_id, stream, group,
+    )
+
+    while True:
+        msg = consume_next(r, stream=stream, group=group, consumer_id=worker_id)
+        if msg is None:
+            continue
+
+        log.debug("worker: received job_id=%s", msg.job_id)
+        try:
+            _process_message(engine, r, msg, worker_id, vlm_client)
+        except Exception as exc:
+            log.exception(
+                "worker: unhandled error for job_id=%s — message stays in PEL: %s",
+                msg.job_id, exc,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    """Bootstrap and start the worker process."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    r = get_redis_client()
+
+    vlm_client = get_vlm_client()
+    log.info("vLLM configured: %s model=%s", vlm_client._base_url, vlm_client._model)
+
+    bootstrap_streams(r)
+    worker_id = generate_worker_id()
+
+    run_worker(engine, r, worker_id, vlm_client)
+
+
+if __name__ == "__main__":
+    main()

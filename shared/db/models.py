@@ -11,6 +11,7 @@ Tables:
   vil_summaries        — summary records with versioning
   vil_rollup_state     — rollup readiness tracking per parent window
   vil_embedding_backlog — reconciliation helper for failed embeddings
+  vil_images           — trailer-pushed images with caption enrichment
 """
 
 from __future__ import annotations
@@ -282,4 +283,78 @@ class VilEmbeddingBacklog(Base):
     __table_args__ = (
         Index("ix_vil_embedding_backlog_next_attempt", "next_attempt_at"),
         Index("ix_vil_embedding_backlog_sn_next", "serial_number", "next_attempt_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# vil_images
+# ---------------------------------------------------------------------------
+
+
+class VilImage(Base):
+    __tablename__ = "vil_images"
+
+    # Deterministic SHA256 — natural primary key.
+    image_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    # Stored for traceability, not used for dedup.
+    event_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
+    camera_id: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    bucket_start_utc: Mapped[datetime] = mapped_column(Text, nullable=False)
+    bucket_end_utc: Mapped[datetime] = mapped_column(Text, nullable=False)
+
+    captured_at_utc: Mapped[datetime | None] = mapped_column(Text, nullable=True)
+    timestamp_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    trigger: Mapped[str] = mapped_column(Text, nullable=False)
+    selection_policy_version: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'1'")
+    )
+
+    context_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'image/jpeg'")
+    )
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    caption_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'pending'")
+    )
+    caption_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caption_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    caption_embedding_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'pending'")
+    )
+    caption_embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    caption_embedding_vector_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    source: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'trailer_push'")
+    )
+    is_searchable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (
+        Index("ix_vil_images_scope_time", "scope_id", "bucket_start_utc"),
+        Index("ix_vil_images_sn_camera_time", "serial_number", "camera_id", "bucket_start_utc"),
+        Index("ix_vil_images_trigger_time", "trigger", "bucket_start_utc"),
+        Index("ix_vil_images_created_at", "created_at"),
     )
