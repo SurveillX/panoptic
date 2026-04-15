@@ -1,11 +1,17 @@
 """
-Embedding client — shared library.
+Embedding client — thin HTTP wrapper around the standalone retrieval service.
 
-Generates dense vector embeddings from text using a sentence-transformers model.
-The underlying model is loaded lazily on first use (singleton per process).
+Public interface is preserved from the previous sentence-transformers version:
 
-Configuration:
-  EMBEDDING_MODEL — model name (default: all-MiniLM-L6-v2)
+    client = get_embedding_client()
+    vector = client.embed(text)             # list[float]
+    vectors = client.embed_batch(texts)     # list[list[float]]  (new)
+
+Configuration (env vars):
+  RETRIEVAL_BASE_URL     — default http://localhost:8700
+  RETRIEVAL_TIMEOUT_SEC  — default 60
+  EMBEDDING_MODEL        — informational (logged); the model that actually
+                           runs is whichever the retrieval service loaded.
 """
 
 from __future__ import annotations
@@ -13,40 +19,55 @@ from __future__ import annotations
 import logging
 import os
 
+import httpx
+
 log = logging.getLogger(__name__)
 
-EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+RETRIEVAL_BASE_URL: str = os.environ.get("RETRIEVAL_BASE_URL", "http://localhost:8700")
+RETRIEVAL_TIMEOUT_SEC: float = float(os.environ.get("RETRIEVAL_TIMEOUT_SEC", "60"))
 
-_model = None
-
-
-def _get_model():
-    global _model
-    if _model is None:
-        from sentence_transformers import SentenceTransformer
-        log.info("loading embedding model: %s", EMBEDDING_MODEL)
-        _model = SentenceTransformer(EMBEDDING_MODEL)
-        log.info("embedding model loaded")
-    return _model
+# Kept for log lines and DB audit fields. Not used for model loading.
+EMBEDDING_MODEL: str = os.environ.get("EMBEDDING_MODEL", "qwen3-embedding-8b")
 
 
 class EmbeddingClient:
-    """Generates text embeddings using a sentence-transformers model."""
+    """HTTP client for the retrieval service /embed endpoint."""
 
-    def __init__(self, model_name: str = EMBEDDING_MODEL) -> None:
-        self._model_name = model_name
+    def __init__(
+        self,
+        base_url: str = RETRIEVAL_BASE_URL,
+        timeout_sec: float = RETRIEVAL_TIMEOUT_SEC,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._timeout = timeout_sec
 
     def embed(self, text: str) -> list[float]:
-        """
-        Encode text as a normalized dense vector.
+        """Embed a single text. Returns the dense vector."""
+        return self.embed_batch([text])[0]
 
-        The model is loaded on first call (lazy singleton).
-        Returns a list of floats.
+    def embed_batch(self, texts: list[str], normalize: bool = True) -> list[list[float]]:
         """
-        model = _get_model()
-        vector = model.encode(text, normalize_embeddings=True)
-        return vector.tolist()
+        Embed a batch of texts. Returns vectors in the same order.
+
+        Raises httpx.HTTPStatusError on non-2xx responses. Callers with worker
+        lease/retry semantics (embedding_worker, caption_embed_worker) rely
+        on exceptions to trigger retry_wait — do not swallow them here.
+        """
+        if not texts:
+            return []
+        url = f"{self._base_url}/embed"
+        resp = httpx.post(
+            url,
+            json={"texts": texts, "normalize": normalize},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["embeddings"]
 
 
 def get_embedding_client() -> EmbeddingClient:
-    return EmbeddingClient(model_name=EMBEDDING_MODEL)
+    return EmbeddingClient(
+        base_url=RETRIEVAL_BASE_URL,
+        timeout_sec=RETRIEVAL_TIMEOUT_SEC,
+    )

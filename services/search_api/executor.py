@@ -84,6 +84,7 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
     # --- Per-type retrieval --------------------------------------------------
     qdrant_ms = 0
     postgres_ms = 0
+    rerank_ms = 0
 
     # Summary
     if "summary" in req.record_types and vector is not None:
@@ -93,7 +94,9 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
         qdrant_ms += int((time.perf_counter() - t) * 1000)
         raw = _apply_summary_time_filter(raw, time_range)
         raw = raw[: req.top_k]
-        raw = rerank(req.query, raw)
+        t = time.perf_counter()
+        raw = rerank(req.query, raw, text_field="summary")
+        rerank_ms += int((time.perf_counter() - t) * 1000)
         results.summaries = [_summary_hit_from_qdrant(r) for r in raw]
 
     # Image
@@ -104,7 +107,9 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
         qdrant_ms += int((time.perf_counter() - t) * 1000)
         raw = _apply_image_time_filter(raw, time_range)
         raw = raw[: req.top_k]
-        raw = rerank(req.query, raw)
+        t = time.perf_counter()
+        raw = rerank(req.query, raw, text_field="caption_text")
+        rerank_ms += int((time.perf_counter() - t) * 1000)
         t = time.perf_counter()
         hydrated = _hydrate_images(engine, [p["payload"]["image_id"] for p in raw if p.get("payload")])
         postgres_ms += int((time.perf_counter() - t) * 1000)
@@ -119,7 +124,9 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
             qdrant_ms += int((time.perf_counter() - t) * 1000)
             raw = _apply_image_time_filter(raw, time_range)
             raw = raw[: req.top_k]
-            raw = rerank(req.query, raw)
+            t = time.perf_counter()
+            raw = rerank(req.query, raw, text_field="caption_text")
+            rerank_ms += int((time.perf_counter() - t) * 1000)
             t = time.perf_counter()
             hydrated = _hydrate_images(engine, [p["payload"]["image_id"] for p in raw if p.get("payload")])
             postgres_ms += int((time.perf_counter() - t) * 1000)
@@ -133,8 +140,7 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
 
     timing.qdrant = qdrant_ms
     timing.postgres = postgres_ms
-    # rerank is a no-op in v1; keep the field so clients don't see it appear later
-    timing.rerank = 0
+    timing.rerank = rerank_ms
     timing.total = int((time.perf_counter() - t0) * 1000)
 
     total = len(results.summaries) + len(results.images) + len(results.events)
