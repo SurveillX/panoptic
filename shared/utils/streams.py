@@ -211,6 +211,12 @@ def consume_next(
 
     Returns None on timeout (no messages available).
 
+    **Redis outage resilience:** catches ConnectionError / TimeoutError from
+    redis-py (observed during a Redis restart), sleeps briefly, and returns
+    None so the caller can loop and retry. Workers' outer loops should call
+    this function in a tight loop — a transient outage looks like a quiet
+    stream and self-heals when Redis comes back.
+
     XREADGROUP with '>' delivers only new messages not yet delivered to any
     consumer in the group.  The returned message is added to the PEL (pending
     entries list) until ack_message() is called.
@@ -223,14 +229,20 @@ def consume_next(
       - If the worker crashes before ACK, the message stays in the PEL,
         preserving the recovery path via XAUTOCLAIM.
     """
-    result = r.xreadgroup(
-        groupname=group,
-        consumername=consumer_id,
-        streams={stream: ">"},
-        count=1,
-        block=block_ms,
-        noack=False,
-    )
+    import time as _time
+    try:
+        result = r.xreadgroup(
+            groupname=group,
+            consumername=consumer_id,
+            streams={stream: ">"},
+            count=1,
+            block=block_ms,
+            noack=False,
+        )
+    except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as exc:
+        log.warning("consume_next: Redis unavailable — backing off 1s: %s", exc)
+        _time.sleep(1.0)
+        return None
 
     if not result:
         return None
