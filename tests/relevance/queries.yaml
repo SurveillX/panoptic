@@ -1,0 +1,121 @@
+# Relevance harness for M1.
+#
+# Each entry:
+#   name:              stable identifier for the query
+#   query:             natural-language query sent to /v1/search
+#   expected_serials:  one or more serials that SHOULD appear in the top-k
+#                      results for the image OR summary branch. (The scene's
+#                      serial_number is the ground-truth anchor — each seeded
+#                      scope has exactly one matching image + summary.)
+#   notes:             human context on why this query is in the set
+#
+# Scoring (see runner.py):
+#   * Query PASSES if any expected serial appears in either the images or
+#     summaries top-k.
+#   * Partial pass (WARN) if a serial appears lower than top-3 but in top-k.
+#
+# The catalog is deliberately small (~15 queries) so the harness stays cheap
+# to run against Gemma-4-26b. Expand only after M2.
+
+queries:
+  - name: person_standing
+    query: "a person standing in the yard"
+    expected_serials: ["YARD-A-001"]   # cam-01 scene
+    expected_cameras: ["cam-01"]
+    notes: "baseline human-detection query"
+
+  - name: two_people
+    query: "multiple people walking together"
+    expected_serials: ["YARD-A-001"]   # cam-02 scene
+    expected_cameras: ["cam-02"]
+    notes: "exercises multi-person discrimination vs single-person"
+
+  - name: red_vehicle
+    query: "a red car parked in the lot"
+    expected_serials: ["YARD-A-001"]   # cam-04 scene
+    expected_cameras: ["cam-04"]
+    notes: "color-specific vehicle query"
+
+  - name: blue_truck
+    query: "a blue truck"
+    expected_serials: ["YARD-A-001"]   # cam-05 scene
+    expected_cameras: ["cam-05"]
+    notes: "color + vehicle type"
+
+  - name: forklift
+    query: "a forklift moving materials"
+    expected_serials: ["YARD-B-002"]   # cam-01 scene
+    expected_cameras: ["cam-01"]
+    notes: "industrial equipment"
+
+  - name: fire
+    query: "fire or flames"
+    expected_serials: ["YARD-B-002"]   # cam-02 scene
+    expected_cameras: ["cam-02"]
+    notes: "critical safety query"
+
+  - name: smoke
+    query: "smoke rising from the ground"
+    expected_serials: ["YARD-B-002"]   # cam-03 scene
+    expected_cameras: ["cam-03"]
+    notes: "near-neighbor to fire query (should disambiguate)"
+
+  - name: water_spill
+    query: "water or liquid on the ground"
+    expected_serials: ["YARD-B-002", "YARD-D-004"]   # cam-04 at B, cam-04 at D (spill)
+    expected_cameras: []
+    notes: "two expected hits — tests multi-match behavior"
+
+  - name: boxes
+    query: "stacked cardboard boxes"
+    expected_serials: ["YARD-B-002"]   # cam-05 scene
+    expected_cameras: ["cam-05"]
+    notes: "static inventory scene"
+
+  - name: cone
+    query: "an orange traffic cone"
+    expected_serials: ["YARD-C-003"]   # cam-01 scene
+    expected_cameras: ["cam-01"]
+    notes: "bright color + shape"
+
+  - name: stop_sign
+    query: "a red stop sign"
+    expected_serials: ["YARD-C-003"]   # cam-03 scene
+    expected_cameras: ["cam-03"]
+    notes: "distinctive iconography"
+
+  - name: ladder
+    query: "a ladder on the ground"
+    expected_serials: ["YARD-C-003"]   # cam-02 scene
+    expected_cameras: ["cam-02"]
+    notes: "fallen / anomaly state"
+
+  - name: carrying
+    query: "someone carrying a package"
+    expected_serials: ["YARD-C-003"]   # cam-05 scene
+    expected_cameras: ["cam-05"]
+    notes: "person + object relationship"
+
+  - name: animal
+    query: "a dog or small animal in view"
+    expected_serials: ["YARD-D-004"]   # cam-02 scene
+    expected_cameras: ["cam-02"]
+    notes: "non-human mover"
+
+  - name: bicycle
+    query: "a bicycle leaning"
+    expected_serials: ["YARD-D-004"]   # cam-01 scene
+    expected_cameras: ["cam-01"]
+    notes: "small vehicle"
+
+  - name: hardhat
+    query: "a hard hat or safety helmet"
+    expected_serials: ["YARD-D-004"]   # cam-03 scene
+    expected_cameras: ["cam-03"]
+    notes: "PPE visibility"
+
+  - name: package
+    query: "an open package or opened box"
+    expected_serials: ["YARD-D-004"]   # cam-05 scene
+    expected_cameras: ["cam-05"]
+    notes: "should discriminate from stacked boxes query"
