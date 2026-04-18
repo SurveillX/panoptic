@@ -86,6 +86,22 @@ class VLEmbeddingClient:
             image_bytes = f.read()
         return self.embed_image_bytes(image_bytes, text=text, normalize=normalize)
 
+    def embed_text(self, text: str, *, normalize: bool = True) -> list[float]:
+        """
+        Embed text only, no image, in the VL shared space. Used by the
+        Search API to query `panoptic_image_vectors` with a text prompt
+        (cross-modal retrieval — same 4096-dim space as the image-side
+        vectors).
+        """
+        resp = httpx.post(
+            f"{self._base_url}/embed_visual",
+            json={"items": [{"text": text}], "normalize": normalize},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["embeddings"][0]
+
 
 def get_vl_embedding_client() -> VLEmbeddingClient:
     return VLEmbeddingClient()

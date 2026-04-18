@@ -32,11 +32,16 @@ def create_app(
     engine,
     embedder: EmbeddingClient | None = None,
     vlm: VLMClient | None = None,
+    vl_embedder=None,  # VLEmbeddingClient | None
     health_state=None,
 ) -> FastAPI:
     app = FastAPI(title="Panoptic Search API", version="1.0")
     _embedder = embedder or EmbeddingClient()
     _vlm = vlm or get_vlm_client()
+    if vl_embedder is None:
+        from shared.clients.vl_embedding import get_vl_embedding_client
+        vl_embedder = get_vl_embedding_client()
+    _vl_embedder = vl_embedder
 
     @app.get("/health")
     def health():
@@ -57,7 +62,7 @@ def create_app(
             )
 
         try:
-            response = execute_search(req, engine, _embedder)
+            response = execute_search(req, engine, _embedder, _vl_embedder)
         except Exception as exc:
             log.exception("search failed")
             return JSONResponse(

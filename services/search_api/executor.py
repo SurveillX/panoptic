@@ -16,13 +16,19 @@ correct without requiring a Qdrant-side datetime-range feature.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
 
 from sqlalchemy import text as sa_text
 
 from shared.clients.embedding import EmbeddingClient
-from shared.clients.qdrant import search_image_captions, search_summaries
+from shared.clients.qdrant import (
+    search_image_captions,
+    search_image_vectors,
+    search_summaries,
+)
+from shared.clients.vl_embedding import VLEmbeddingClient
 from shared.search.keyword_expansion import expand_query
 
 from .qdrant_filters import build_event_filter, build_image_filter, build_summary_filter
@@ -63,7 +69,31 @@ def _qdrant_limit(top_k: int, has_time_filter: bool) -> int:
     return top_k * 3 if has_time_filter else top_k
 
 
-def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> SearchResponse:
+SEARCH_RETRIEVAL_MODE = os.environ.get("SEARCH_RETRIEVAL_MODE", "hybrid").lower()
+# "caption" → captions only (legacy, pre-M5)
+# "vl"      → VL image vectors only
+# "hybrid"  → run both, merge by image_id keeping the higher score, then rerank
+
+
+def _merge_image_hits_by_id(caption_hits: list[dict], vl_hits: list[dict]) -> list[dict]:
+    """Union by image_id, keep the higher-scoring entry from either branch."""
+    seen: dict[str, dict] = {}
+    for h in list(caption_hits) + list(vl_hits):
+        payload = h.get("payload") or {}
+        key = payload.get("image_id")
+        if not key:
+            continue
+        if key not in seen or (h.get("score") or 0) > (seen[key].get("score") or 0):
+            seen[key] = h
+    return sorted(seen.values(), key=lambda r: (r.get("score") or 0.0), reverse=True)
+
+
+def execute_search(
+    req: SearchRequest,
+    engine,
+    embedder: EmbeddingClient,
+    vl_embedder: VLEmbeddingClient | None = None,
+) -> SearchResponse:
     t0 = time.perf_counter()
 
     timing = TimingMs()
@@ -77,9 +107,20 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
 
     # --- Embed query once if present -----------------------------------------
     vector: list[float] | None = None
+    vl_vector: list[float] | None = None
     if req.query:
         expanded = expand_query(req.query)
-        vector = embedder.embed(expanded)
+        if SEARCH_RETRIEVAL_MODE in ("caption", "hybrid"):
+            vector = embedder.embed(expanded)
+        if SEARCH_RETRIEVAL_MODE in ("vl", "hybrid") and vl_embedder is not None:
+            try:
+                vl_vector = vl_embedder.embed_text(expanded)
+            except Exception as exc:
+                log.warning("VL query embedding failed, falling back to caption-only: %s", exc)
+                vl_vector = None
+        # Summary search always uses the text vector; fall back if only VL was asked for.
+        if vector is None and vl_vector is None:
+            vector = embedder.embed(expanded)
 
     # --- Per-type retrieval --------------------------------------------------
     qdrant_ms = 0
@@ -100,10 +141,13 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
         results.summaries = [_summary_hit_from_qdrant(r) for r in raw]
 
     # Image
-    if "image" in req.record_types and vector is not None:
+    if "image" in req.record_types and (vector is not None or vl_vector is not None):
         t = time.perf_counter()
         i_filter = build_image_filter(req)
-        raw = search_image_captions(vector, i_filter, _qdrant_limit(req.top_k, has_time_filter))
+        limit = _qdrant_limit(req.top_k, has_time_filter)
+        caption_hits = search_image_captions(vector, i_filter, limit) if vector is not None else []
+        vl_hits = search_image_vectors(vl_vector, i_filter, limit) if vl_vector is not None else []
+        raw = _merge_image_hits_by_id(caption_hits, vl_hits)
         qdrant_ms += int((time.perf_counter() - t) * 1000)
         raw = _apply_image_time_filter(raw, time_range)
         raw = raw[: req.top_k]
@@ -117,10 +161,13 @@ def execute_search(req: SearchRequest, engine, embedder: EmbeddingClient) -> Sea
 
     # Event
     if "event" in req.record_types:
-        if vector is not None:
+        if vector is not None or vl_vector is not None:
             t = time.perf_counter()
             e_filter = build_event_filter(req)
-            raw = search_image_captions(vector, e_filter, _qdrant_limit(req.top_k, has_time_filter))
+            limit = _qdrant_limit(req.top_k, has_time_filter)
+            caption_hits = search_image_captions(vector, e_filter, limit) if vector is not None else []
+            vl_hits = search_image_vectors(vl_vector, e_filter, limit) if vl_vector is not None else []
+            raw = _merge_image_hits_by_id(caption_hits, vl_hits)
             qdrant_ms += int((time.perf_counter() - t) * 1000)
             raw = _apply_image_time_filter(raw, time_range)
             raw = raw[: req.top_k]
