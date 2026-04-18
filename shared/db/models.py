@@ -12,6 +12,8 @@ Tables:
   panoptic_rollup_state     — rollup readiness tracking per parent window
   panoptic_embedding_backlog — reconciliation helper for failed embeddings
   panoptic_images           — trailer-pushed images with caption enrichment
+  panoptic_events           — unified event layer (image-trigger + bucket-marker)
+  panoptic_camera_aliases   — inert canonical-camera mapping (D-2 Option B)
 """
 
 from __future__ import annotations
@@ -366,6 +368,87 @@ class PanopticImage(Base):
         Index("ix_panoptic_images_sn_camera_time", "serial_number", "camera_id", "bucket_start_utc"),
         Index("ix_panoptic_images_trigger_time", "trigger", "bucket_start_utc"),
         Index("ix_panoptic_images_created_at", "created_at"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# panoptic_events
+# ---------------------------------------------------------------------------
+
+
+class PanopticEvent(Base):
+    """
+    Unified event layer. Rows originate from two sources:
+      - event_source='image_trigger' — one row per alert/anomaly image
+      - event_source='bucket_marker' — one row per marker in a bucket's
+        event_markers (spike, after_hours, ...)
+
+    event_id is content-addressed (see shared/events/build.generate_event_id).
+    bucket_id and image_id are enrichment fields that may be populated later;
+    they MUST NOT participate in the identity hash.
+    """
+
+    __tablename__ = "panoptic_events"
+
+    event_id: Mapped[str] = mapped_column(Text, primary_key=True)
+
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
+    camera_id: Mapped[str] = mapped_column(Text, nullable=False)
+    scope_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    event_type: Mapped[str] = mapped_column(Text, nullable=False)
+    event_source: Mapped[str] = mapped_column(Text, nullable=False)
+
+    severity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    start_time_utc: Mapped[datetime] = mapped_column(Text, nullable=False)
+    end_time_utc: Mapped[datetime | None] = mapped_column(Text, nullable=True)
+    event_time_utc: Mapped[datetime] = mapped_column(Text, nullable=False)
+
+    bucket_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (
+        Index("ix_panoptic_events_scope_time", "scope_id", "event_time_utc"),
+        Index("ix_panoptic_events_sn_camera_time", "serial_number", "camera_id", "event_time_utc"),
+        Index("ix_panoptic_events_type_time", "event_type", "event_time_utc"),
+        Index("ix_panoptic_events_source_time", "event_source", "event_time_utc"),
+        Index("ix_panoptic_events_created_at", "created_at"),
+    )
+
+
+class PanopticCameraAlias(Base):
+    """
+    Optional per-trailer raw→canonical camera_id mapping (migration 009).
+
+    Deployed empty. Insert a row when a trailer emits different raw
+    camera_ids in its bucket vs image payloads for the same physical
+    camera. Workers collapse via shared.canonical.camera.resolve_canonical_camera_id.
+    """
+
+    __tablename__ = "panoptic_camera_aliases"
+
+    serial_number: Mapped[str] = mapped_column(Text, primary_key=True)
+    raw_camera_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    payload_type: Mapped[str] = mapped_column(Text, primary_key=True)
+    canonical_camera_id: Mapped[str] = mapped_column(Text, nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
     )
 
 

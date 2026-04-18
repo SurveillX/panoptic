@@ -159,8 +159,9 @@ def _select_evidence(
     Slice top-N per type and attach synthetic labels.
 
     Dedup rule: the JPEG for an image is attached only once. If an event hit
-    shares its id (underlying image_id) with a selected image, the event is
-    still kept as text context (labeled evt_N), but its JPEG is NOT re-sent.
+    references an image that's already selected (via event.image_id), the
+    event is still kept as text context (labeled evt_N), but its JPEG is
+    NOT re-sent.
     """
     summary_items: list[tuple[str, SummaryHit]] = [
         (f"sum_{i}", s) for i, s in enumerate(results.summaries[:max_summaries])
@@ -184,15 +185,16 @@ def _select_evidence(
                 img.id, img.storage_path,
             )
 
-    # Events: keep top-N. Event id IS the underlying image_id, so we can
-    # test overlap directly. Events whose image already appears in image_items
-    # are still included as text context (no extra JPEG).
+    # Events: keep top-N. Event.id is the event_id (content-addressed); the
+    # underlying image is referenced via event.image_id for image_trigger
+    # events. Events whose image already appears in image_items are still
+    # included as text context (no extra JPEG).
     event_items: list[tuple[str, EventHit]] = [
         (f"evt_{i}", e) for i, e in enumerate(results.events[:max_events])
     ]
 
     # Note overlap in logs for visibility.
-    overlap = [label for label, e in event_items if e.id in selected_image_ids]
+    overlap = [label for label, e in event_items if e.image_id and e.image_id in selected_image_ids]
     if overlap:
         log.debug("verify: event labels sharing image_id with selected images: %s", overlap)
 

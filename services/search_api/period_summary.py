@@ -131,7 +131,7 @@ def run_period_summary(
             overall=OverallSummary(
                 headline="No evidence found in the requested period.",
                 summary=(
-                    "No summaries, images, or alert/anomaly events were recorded "
+                    "No summaries, images, or events were recorded "
                     "for the requested trailer and camera set within the given time range."
                 ),
                 supporting_camera_ids=[],
@@ -285,18 +285,26 @@ def _fetch_images(
 def _fetch_events(
     engine, serial_number: str, camera_id: str, tr: TimeRange, limit: int,
 ) -> list[dict]:
+    """
+    Fetch panoptic_events rows (both image_trigger and bucket_marker) for
+    the camera in window. Switched from panoptic_images in P5 — the event
+    layer is now the authoritative source for "what happened here."
+    """
     if limit <= 0:
         return []
     sql = sa_text("""
-        SELECT image_id, serial_number, camera_id, scope_id, trigger,
-               captured_at_utc, bucket_start_utc, caption_text
-          FROM panoptic_images
+        SELECT event_id, event_type, event_source,
+               serial_number, camera_id, scope_id,
+               severity, confidence,
+               start_time_utc, end_time_utc, event_time_utc,
+               bucket_id, image_id,
+               title, description
+          FROM panoptic_events
          WHERE serial_number = :sn
            AND camera_id     = :cam
-           AND trigger IN ('alert','anomaly')
-           AND bucket_start_utc >= :tstart
-           AND bucket_start_utc <  :tend
-         ORDER BY bucket_start_utc DESC
+           AND event_time_utc >= :tstart
+           AND event_time_utc <  :tend
+         ORDER BY event_time_utc DESC
          LIMIT :limit
     """)
     with engine.connect() as conn:
@@ -310,8 +318,9 @@ def _fetch_events(
     out: list[dict] = []
     for row in rows:
         d = dict(row)
-        d["captured_at"] = _iso(row.get("captured_at_utc"))
-        d["bucket_start"] = _iso(row.get("bucket_start_utc"))
+        d["event_time_utc"] = _iso(row.get("event_time_utc"))
+        d["start_time_utc"] = _iso(row.get("start_time_utc"))
+        d["end_time_utc"] = _iso(row.get("end_time_utc"))
         out.append(d)
     return out
 
@@ -374,7 +383,7 @@ def _synthesize_camera_summary(
 
     label_to_summary_id = {label: s["summary_id"] for label, s in summary_items}
     label_to_image_id = {label: im["image_id"] for label, im in image_items}
-    label_to_event_id = {label: ev["image_id"] for label, ev in event_items}
+    label_to_event_id = {label: ev["event_id"] for label, ev in event_items}
 
     # Load JPEGs in the same order as image_items.
     frame_uris: list[str] = []

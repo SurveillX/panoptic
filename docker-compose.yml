@@ -1,13 +1,13 @@
 name: panoptic
 
-# Containerized Panoptic app stack — webhook, 7 workers, reclaimer, and
+# Containerized Panoptic app stack — webhook, 8 workers, reclaimer, and
 # the Search API. Each worker is a separate service so restarts are
 # surgical (tmux-dev.sh and this file are 1:1).
 #
 # Networking: host mode. The workers already talk to panoptic-store,
 # panoptic-vllm, and panoptic-retrieval over localhost. Host mode keeps
 # the existing .env URLs working unchanged. Each worker binds a unique
-# /healthz port (8201-8206, 8210, 8100, 8600) so there are no collisions.
+# /healthz port (8201-8207, 8210, 8100, 8600) so there are no collisions.
 #
 # Depends on: panoptic-store (postgres/qdrant/redis) + panoptic-vllm +
 # panoptic-retrieval all running on the host. Bring those up first.
@@ -123,6 +123,17 @@ services:
     command: python -m services.panoptic_rollup_worker.worker
     healthcheck:
       test: ["CMD-SHELL", "curl -sSf http://localhost:8205/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  event_producer:
+    <<: *worker-base
+    container_name: panoptic-event-producer
+    command: python -m services.panoptic_event_producer.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8207/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

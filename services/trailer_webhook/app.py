@@ -34,7 +34,7 @@ from shared.clients.trailer_intake import (
 )
 from shared.health.state import HealthState
 from shared.schemas.image import TrailerImageMetadata, generate_image_id
-from shared.schemas.job import make_image_caption_key
+from shared.schemas.job import make_event_produce_image_key, make_image_caption_key
 from shared.schemas.trailer_webhook import TrailerBucketPayload
 from shared.utils.streams import enqueue_job
 
@@ -380,6 +380,32 @@ def create_app(
             )
             job_row = job_id_result.fetchone()
 
+            # -- Create event_produce job for alert/anomaly images --
+            # (baseline images do not produce events)
+            event_job_row = None
+            if meta.trigger in ("alert", "anomaly"):
+                event_job_result = conn.execute(
+                    sa_text("""
+                        INSERT INTO panoptic_jobs (
+                            job_key, serial_number, job_type, payload
+                        ) VALUES (
+                            :job_key, :serial_number, 'event_produce',
+                            CAST(:payload AS jsonb)
+                        )
+                        ON CONFLICT (job_key) DO NOTHING
+                        RETURNING job_id
+                    """),
+                    {
+                        "job_key": make_event_produce_image_key(image_id),
+                        "serial_number": meta.serial_number,
+                        "payload": json.dumps({
+                            "source_type": "image",
+                            "image_id": image_id,
+                        }),
+                    },
+                )
+                event_job_row = event_job_result.fetchone()
+
             conn.commit()
 
         # -- Post-commit: enqueue to Redis stream --
@@ -394,6 +420,21 @@ def create_app(
             except Exception as exc:
                 log.error(
                     "image: Redis enqueue failed image_id=%s: %s — "
+                    "job exists in Postgres, reclaimer will pick it up",
+                    image_id, exc,
+                )
+
+        if event_job_row is not None:
+            try:
+                enqueue_job(
+                    r,
+                    job_type="event_produce",
+                    job_id=str(event_job_row.job_id),
+                    serial_number=meta.serial_number,
+                )
+            except Exception as exc:
+                log.error(
+                    "image: event_produce enqueue failed image_id=%s: %s — "
                     "job exists in Postgres, reclaimer will pick it up",
                     image_id, exc,
                 )

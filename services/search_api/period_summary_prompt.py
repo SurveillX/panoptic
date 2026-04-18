@@ -46,8 +46,9 @@ PER_CAMERA_SYSTEM_MESSAGE = """\
 You are a surveillance-intelligence summarizer for a single camera over a \
 bounded time period on a work-site trailer.
 
-Given evidence (summaries, images with captions, and alert/anomaly events), \
-produce one short summary for that camera.
+Given evidence (summaries, images with captions, and events drawn from \
+alert/anomaly triggers and bucket-level markers like activity spikes or \
+after-hours activity), produce one short summary for that camera.
 
 Grounding rules:
 - Stay strictly grounded in the provided evidence. Do not invent activity, \
@@ -146,7 +147,10 @@ def build_per_camera_user_prompt(
         lines.append("")
 
     if event_items:
-        lines.append("Events (alert/anomaly; structured context, may correspond to images below):")
+        lines.append(
+            "Events (alert/anomaly or bucket-level markers; structured "
+            "context, some may correspond to images below):"
+        )
         for label, e in event_items:
             lines.append(_render_event_item(label, e))
         lines.append("")
@@ -217,12 +221,14 @@ def _render_summary_item(label: str, s: dict) -> str:
 
 
 def _render_event_item(label: str, e: dict) -> str:
-    trg = e.get("trigger") or "?"
-    when = e.get("captured_at") or e.get("bucket_start") or "?"
-    cap = (e.get("caption_text") or "").strip().replace("\n", " ")
+    event_type = e.get("event_type") or "?"
+    source = e.get("event_source") or "?"
+    when = e.get("event_time_utc") or e.get("start_time_utc") or "?"
+    title = e.get("title") or event_type
+    desc = (e.get("description") or "").strip().replace("\n", " ")
     return (
-        f"[{label}] trigger={trg} time={when}\n"
-        f"  caption: {cap or '(no caption available)'}"
+        f"[{label}] type={event_type} source={source} time={when}\n"
+        f"  {title}: {desc or '(no description)'}"
     )
 
 

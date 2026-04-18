@@ -42,7 +42,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from shared.schemas.bucket import BucketRecord, generate_bucket_id
-from shared.schemas.job import make_bucket_summary_key
+from shared.schemas.job import make_bucket_summary_key, make_event_produce_bucket_key
 from shared.utils.activity import (
     ActivityComponents,
     CameraStats,
@@ -260,6 +260,40 @@ def ingest_bucket(
         was_duplicate_job = job_row is None
         returned_job_id = None if was_duplicate_job else new_job_id
 
+        # Step 5b: Insert event_produce job for buckets with markers.
+        # job_key is bucket-scoped (one event_produce per bucket ever); the
+        # executor iterates the bucket's current event_markers, so reruns
+        # against a modified bucket still pick up changes. ON CONFLICT
+        # (job_key) DO NOTHING protects against duplicate deliveries.
+        event_produce_job_id: str | None = None
+        if bucket.event_markers and bucket_action != "duplicate":
+            new_event_job_id = str(uuid.uuid4())
+            ev_row = conn.execute(
+                text("""
+                    INSERT INTO panoptic_jobs (
+                        job_id, job_key, serial_number, job_type,
+                        priority, state, attempt_count, max_attempts, payload
+                    ) VALUES (
+                        :job_id, :job_key, :serial_number, 'event_produce',
+                        'normal', 'pending', 0, :max_attempts, CAST(:payload AS jsonb)
+                    )
+                    ON CONFLICT (job_key) DO NOTHING
+                    RETURNING job_id
+                """),
+                {
+                    "job_id":       new_event_job_id,
+                    "job_key":      make_event_produce_bucket_key(bucket.bucket_id),
+                    "serial_number": bucket.serial_number,
+                    "max_attempts": max_attempts,
+                    "payload":      json.dumps({
+                        "source_type": "bucket",
+                        "bucket_id":   bucket.bucket_id,
+                    }),
+                },
+            ).fetchone()
+            if ev_row is not None:
+                event_produce_job_id = new_event_job_id
+
         # Step 6: Commit — both rows durable before any Redis write
         conn.commit()
 
@@ -284,6 +318,22 @@ def ingest_bucket(
             log.error(
                 "ingest_bucket: enqueue failed job_id=%s bucket_id=%s: %s",
                 returned_job_id, bucket.bucket_id, exc,
+            )
+
+    if event_produce_job_id is not None:
+        try:
+            enqueue_job(
+                r,
+                job_type="event_produce",
+                job_id=event_produce_job_id,
+                serial_number=bucket.serial_number,
+                priority="normal",
+            )
+        except Exception as exc:
+            log.error(
+                "ingest_bucket: event_produce enqueue failed job_id=%s bucket_id=%s: %s — "
+                "job exists in Postgres, reclaimer will pick it up",
+                event_produce_job_id, bucket.bucket_id, exc,
             )
 
     log.info(

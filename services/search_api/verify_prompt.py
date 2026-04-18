@@ -85,12 +85,14 @@ def build_user_prompt(
     if event_items:
         lines.append("Events (structured context, some may correspond to images below):")
         for label, e in event_items:
-            time_str = e.captured_at or e.bucket_start or "unknown time"
+            time_str = e.event_time_utc or e.start_time_utc or "unknown time"
             scope = e.scope_id or f"{e.serial_number or '?'}:{e.camera_id or '?'}"
-            caption = (e.caption_text or "").strip().replace("\n", " ")
+            desc = (e.description or "").strip().replace("\n", " ")
+            title = e.title or e.event_type or "event"
             lines.append(
-                f"[{label}] trigger={e.trigger or '?'} time={time_str} scope={scope}\n"
-                f"  caption: {caption or '(no caption available)'}"
+                f"[{label}] type={e.event_type or '?'} source={e.event_source or '?'} "
+                f"time={time_str} scope={scope}\n"
+                f"  {title}: {desc or '(no description)'}"
             )
         lines.append("")
 

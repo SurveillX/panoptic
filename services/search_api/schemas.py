@@ -42,6 +42,12 @@ class SearchFilters(BaseModel):
     time_range: TimeRange | None = None
     trigger: list[TriggerValue] | None = None
     summary_level: list[SummaryLevel] | None = None
+    # Event-layer filters (panoptic_events):
+    #   event_type:   e.g. "alert_created", "anomaly_detected", "activity_spike",
+    #                      "after_hours_activity"
+    #   event_source: "image_trigger" | "bucket_marker"
+    event_type: list[str] | None = None
+    event_source: list[str] | None = None
 
     @model_validator(mode="after")
     def _normalize_lists(self) -> "SearchFilters":
@@ -49,6 +55,10 @@ class SearchFilters(BaseModel):
             self.trigger = None
         if self.summary_level is not None and len(self.summary_level) == 0:
             self.summary_level = None
+        if self.event_type is not None and len(self.event_type) == 0:
+            self.event_type = None
+        if self.event_source is not None and len(self.event_source) == 0:
+            self.event_source = None
         return self
 
 
@@ -105,16 +115,35 @@ class ImageHit(BaseModel):
 
 
 class EventHit(BaseModel):
-    id: str
+    """
+    Event record hit. Fields mirror panoptic_events — the legacy
+    image-trigger-derived fields (trigger, captured_at, bucket_start,
+    caption_text) are gone per P4 D-5 (clean cut — no back-compat layer).
+    """
+
+    id: str  # event_id (content-addressed SHA256)
     score: float
     record_type: Literal["event"] = "event"
-    trigger: str | None = None
+
+    event_type: str | None = None
+    event_source: str | None = None  # "image_trigger" | "bucket_marker"
+
     serial_number: str | None = None
     camera_id: str | None = None
     scope_id: str | None = None
-    captured_at: str | None = None
-    bucket_start: str | None = None
-    caption_text: str | None = None
+
+    severity: float | None = None
+    confidence: float | None = None
+
+    start_time_utc: str | None = None
+    end_time_utc: str | None = None
+    event_time_utc: str | None = None
+
+    bucket_id: str | None = None
+    image_id: str | None = None
+
+    title: str | None = None
+    description: str | None = None
 
 
 class SearchResults(BaseModel):

@@ -162,6 +162,11 @@ def execute_search(
     # Event
     if "event" in req.record_types:
         if vector is not None or vl_vector is not None:
+            # Semantic retrieval: search image-caption / VL spaces (only
+            # image-sourced events carry embeddings in v1), then hydrate
+            # from panoptic_events via the image_id FK. Bucket-sourced
+            # events are NOT returned by semantic queries in v1 by design
+            # — they surface in the filter-only browse path.
             t = time.perf_counter()
             e_filter = build_event_filter(req)
             limit = _qdrant_limit(req.top_k, has_time_filter)
@@ -175,9 +180,13 @@ def execute_search(
             raw = rerank_images(req.query, raw)
             rerank_ms += int((time.perf_counter() - t) * 1000)
             t = time.perf_counter()
-            hydrated = _hydrate_images(engine, [p["payload"]["image_id"] for p in raw if p.get("payload")])
+            image_ids = [p["payload"]["image_id"] for p in raw if p.get("payload")]
+            events_by_image = _hydrate_events_by_image(engine, image_ids)
             postgres_ms += int((time.perf_counter() - t) * 1000)
-            results.events = [_event_hit_from_qdrant(r, hydrated) for r in raw]
+            results.events = [
+                _event_hit_from_semantic(r, events_by_image) for r in raw
+                if (r.get("payload") or {}).get("image_id") in events_by_image
+            ]
         else:
             # Filter-only event browse: Postgres only.
             t = time.perf_counter()
@@ -248,17 +257,74 @@ def _hydrate_images(engine, image_ids: list[str]) -> dict[str, dict]:
     return out
 
 
+def _hydrate_events_by_image(engine, image_ids: list[str]) -> dict[str, dict]:
+    """
+    Load image_trigger events for a set of image_ids. Returns a dict keyed
+    by image_id so callers can preserve the Qdrant rank order. Events whose
+    image_id has no matching panoptic_events row (e.g. baseline images or
+    events not yet produced) are simply absent from the result.
+    """
+    if not image_ids:
+        return {}
+    sql = sa_text("""
+        SELECT event_id, event_type, event_source,
+               serial_number, camera_id, scope_id,
+               severity, confidence,
+               start_time_utc, end_time_utc, event_time_utc,
+               bucket_id, image_id,
+               title, description
+          FROM panoptic_events
+         WHERE image_id = ANY(:ids)
+           AND event_source = 'image_trigger'
+    """)
+    out: dict[str, dict] = {}
+    with engine.connect() as conn:
+        for row in conn.execute(sql, {"ids": image_ids}).mappings():
+            out[row["image_id"]] = dict(row)
+    return out
+
+
+_TRIGGER_TO_EVENT_TYPE = {
+    "alert": "alert_created",
+    "anomaly": "anomaly_detected",
+}
+
+
 def _browse_events(engine, req: SearchRequest) -> list[dict]:
+    """
+    Filter-only browse over panoptic_events.
+
+    Supports: serial_number, camera_id, time_range, event_type, event_source.
+    The legacy `trigger` filter is mapped onto `event_type` for back-compat
+    on image-sourced events (alert → alert_created, anomaly → anomaly_detected).
+    """
     filters = req.filters
-    clauses = ["trigger IN ('alert','anomaly')"]
+    clauses: list[str] = []
     params: dict = {"limit": req.top_k}
 
+    event_type_set: set[str] = set()
+    if filters.event_type:
+        event_type_set.update(filters.event_type)
     if filters.trigger:
-        effective = [t for t in filters.trigger if t in ("alert", "anomaly")]
-        if not effective:
+        mapped = [_TRIGGER_TO_EVENT_TYPE[t] for t in filters.trigger if t in _TRIGGER_TO_EVENT_TYPE]
+        if not mapped:
+            # trigger=['baseline'] or similar — no events match
             return []
-        clauses = ["trigger = ANY(:triggers)"]
-        params["triggers"] = effective
+        if event_type_set:
+            # Intersect with any explicit event_type filter.
+            event_type_set &= set(mapped)
+            if not event_type_set:
+                return []
+        else:
+            event_type_set.update(mapped)
+
+    if event_type_set:
+        clauses.append("event_type = ANY(:event_types)")
+        params["event_types"] = sorted(event_type_set)
+
+    if filters.event_source:
+        clauses.append("event_source = ANY(:event_sources)")
+        params["event_sources"] = list(filters.event_source)
 
     if filters.serial_number:
         clauses.append("serial_number = :sn")
@@ -267,18 +333,22 @@ def _browse_events(engine, req: SearchRequest) -> list[dict]:
         clauses.append("camera_id = :cam")
         params["cam"] = filters.camera_id
     if filters.time_range:
-        clauses.append("bucket_start_utc >= :tstart AND bucket_start_utc < :tend")
+        clauses.append("event_time_utc >= :tstart AND event_time_utc < :tend")
         params["tstart"] = filters.time_range.start
         params["tend"] = filters.time_range.end
 
-    where = " AND ".join(clauses)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = sa_text(f"""
-        SELECT image_id, serial_number, camera_id, scope_id, trigger,
-               captured_at_utc, bucket_start_utc, caption_text, storage_path
-        FROM panoptic_images
-        WHERE {where}
-        ORDER BY bucket_start_utc DESC
-        LIMIT :limit
+        SELECT event_id, event_type, event_source,
+               serial_number, camera_id, scope_id,
+               severity, confidence,
+               start_time_utc, end_time_utc, event_time_utc,
+               bucket_id, image_id,
+               title, description
+          FROM panoptic_events
+          {where}
+         ORDER BY event_time_utc DESC
+         LIMIT :limit
     """)
     with engine.connect() as conn:
         return [dict(row) for row in conn.execute(sql, params).mappings()]
@@ -322,34 +392,32 @@ def _image_hit(r: dict, hydrated: dict[str, dict]) -> ImageHit:
     )
 
 
-def _event_hit_from_qdrant(r: dict, hydrated: dict[str, dict]) -> EventHit:
+def _event_hit_from_semantic(r: dict, events_by_image: dict[str, dict]) -> EventHit:
+    """Build an EventHit from a Qdrant image-space hit + hydrated event row."""
     payload = r.get("payload") or {}
     image_id = payload.get("image_id")
-    row = hydrated.get(image_id, {})
-    return EventHit(
-        id=image_id or str(r.get("id")),
-        score=float(r.get("score") or 0.0),
-        trigger=payload.get("trigger") or row.get("trigger"),
-        serial_number=payload.get("serial_number") or row.get("serial_number"),
-        camera_id=payload.get("camera_id") or row.get("camera_id"),
-        scope_id=payload.get("scope_id") or row.get("scope_id"),
-        captured_at=payload.get("captured_at") or _iso(row.get("captured_at_utc")),
-        bucket_start=payload.get("bucket_start") or _iso(row.get("bucket_start_utc")),
-        caption_text=payload.get("caption_text") or row.get("caption_text"),
-    )
+    row = events_by_image.get(image_id, {})
+    return _event_hit_from_row(row, score=float(r.get("score") or 0.0))
 
 
-def _event_hit_from_row(row: dict) -> EventHit:
+def _event_hit_from_row(row: dict, *, score: float = 0.0) -> EventHit:
     return EventHit(
-        id=row["image_id"],
-        score=0.0,
-        trigger=row.get("trigger"),
+        id=row["event_id"],
+        score=score,
+        event_type=row.get("event_type"),
+        event_source=row.get("event_source"),
         serial_number=row.get("serial_number"),
         camera_id=row.get("camera_id"),
         scope_id=row.get("scope_id"),
-        captured_at=_iso(row.get("captured_at_utc")),
-        bucket_start=_iso(row.get("bucket_start_utc")),
-        caption_text=row.get("caption_text"),
+        severity=row.get("severity"),
+        confidence=row.get("confidence"),
+        start_time_utc=_iso(row.get("start_time_utc")),
+        end_time_utc=_iso(row.get("end_time_utc")),
+        event_time_utc=_iso(row.get("event_time_utc")),
+        bucket_id=row.get("bucket_id"),
+        image_id=row.get("image_id"),
+        title=row.get("title"),
+        description=row.get("description"),
     )
 
 

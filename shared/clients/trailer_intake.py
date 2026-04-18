@@ -30,6 +30,7 @@ import redis
 from shared.clients.cognia import ingest_bucket
 from shared.schemas.bucket import generate_bucket_id
 from shared.schemas.trailer_webhook import TrailerBucketData, TrailerBucketPayload
+from shared.signals.derive import derive_markers
 
 log = logging.getLogger(__name__)
 
@@ -330,40 +331,9 @@ def _derive_event_markers(
     fragments: list[TrailerBucketData],
     bucket_start: datetime,
 ) -> list[dict]:
-    """Derive event markers from fragment data."""
-    markers: list[dict] = []
-
-    # Spike: anomaly_flag == 1 and anomaly_score >= 0.7.
-    # Null anomaly_score means the scorer hasn't run yet — treat as not-a-spike.
-    # Null max_count_at means no peak timestamp — fall back to bucket_start.
-    for frag in fragments:
-        score = frag.anomaly_score
-        if frag.anomaly_flag == 1 and score is not None and score >= 0.7:
-            ts = (
-                frag.max_count_at.isoformat()
-                if frag.max_count_at is not None
-                else bucket_start.isoformat()
-            )
-            markers.append({
-                "ts": ts,
-                "event_type": "spike",
-                "label": "activity_spike",
-                "confidence": min(score, 1.0),
-            })
-
-    # After hours: bucket outside 06:00-21:00 UTC
-    hour = bucket_start.hour
-    if hour < 6 or hour >= 21:
-        # Only add if there were actual detections
-        if any(f.total_detections > 0 for f in fragments):
-            markers.append({
-                "ts": bucket_start.isoformat(),
-                "event_type": "after_hours",
-                "label": "after hours activity",
-                "confidence": 0.9,
-            })
-
-    return markers
+    """Thin wrapper around shared marker derivation — kept so callers in this
+    file stay unchanged. See shared/signals/derive.derive_markers."""
+    return derive_markers(fragments, bucket_start)
 
 
 def _compute_detection_hash(fragments: list[TrailerBucketData]) -> str:

@@ -26,7 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 JobType = Literal[
     "bucket_summary", "rollup_summary", "embedding_upsert", "recompute_summary",
-    "image_caption", "caption_embed",
+    "image_caption", "caption_embed", "image_embed", "event_produce",
 ]
 JobState = Literal[
     "pending",
@@ -83,6 +83,14 @@ def make_caption_embed_key(image_id: str) -> str:
 
 def make_image_embed_key(image_id: str) -> str:
     return f"image_embed:{image_id}"
+
+
+def make_event_produce_image_key(image_id: str) -> str:
+    return f"event_produce:image:{image_id}"
+
+
+def make_event_produce_bucket_key(bucket_id: str) -> str:
+    return f"event_produce:bucket:{bucket_id}"
 
 
 # ---------------------------------------------------------------------------
