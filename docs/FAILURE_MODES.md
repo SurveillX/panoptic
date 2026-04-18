@@ -186,6 +186,45 @@ way as Qdrant above (retry_wait → DLQ after max_attempts).
 
 ---
 
+## 11. Worker-restart storm (all consumer workers killed simultaneously)
+
+**Status:** verified 2026-04-18 via `tmux respawn-pane` + `pkill -9` on
+all 6 job-processing workers while real trailer traffic flowed.
+
+Observed: 1 job in `leased` state at the moment of kill, the rest in
+`pending` (freshly enqueued + awaiting delivery). After respawn, workers
+resumed, the reclaimer tick caught up the one stuck lease
+(`reset=1 re_enqueued=1 pel_acked=1`), all queues drained to zero non-
+terminal jobs in ~3 minutes while trailer kept pushing. Zero DLQ
+deposits. Zero data loss.
+
+Recovery envelope: LEASE_TTL (120s) bounds the time orphaned leases
+stay visible as non-terminal; reclaimer tick interval (30s) bounds
+detection after that. So max recovery lag ≈ 150s.
+
+## 12. Duplicate flood (100 concurrent identical pushes)
+
+**Status:** verified 2026-04-18 via `scripts/dev_duplicate_flood.py`.
+
+Fired 100 concurrent signed pushes with **identical `event_id`** at 20
+worker threads against the live webhook. Ran for both bucket and image
+endpoints.
+
+Both runs: **1 accepted, 99 duplicates, 0 errors.** Dedup layers
+(Redis SETNX on bucket `event_id`, Postgres `ON CONFLICT (image_id)
+DO NOTHING` for image deterministic `image_id`) hold under concurrent
+load. Throughput ~35 req/s at this concurrency — HMAC verification +
+body parse + dedup-check in ~28ms per request.
+
+Repeatable smoke:
+
+```bash
+.venv/bin/python scripts/dev_duplicate_flood.py --n 100 --kind bucket
+.venv/bin/python scripts/dev_duplicate_flood.py --n 100 --kind image
+```
+
+---
+
 ## 8. Trailer push during panoptic webhook downtime
 
 **Symptom:** trailer sees 502/503 at `https://panoptic.surveillx.ai`.
