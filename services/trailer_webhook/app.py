@@ -26,15 +26,19 @@ from PIL import Image as PILImage
 from pydantic import ValidationError
 from sqlalchemy import text as sa_text
 
+from shared.auth.hmac_auth import AUTH_ENABLED, ReplayCache, TrailerRegistry
 from shared.clients.trailer_intake import (
     FINALIZE_QUIET_SECONDS,
     scan_and_finalize,
     store_fragment,
 )
+from shared.health.state import HealthState
 from shared.schemas.image import TrailerImageMetadata, generate_image_id
 from shared.schemas.job import make_image_caption_key
 from shared.schemas.trailer_webhook import TrailerBucketPayload
 from shared.utils.streams import enqueue_job
+
+from services.trailer_webhook.middleware import TrailerAuthMiddleware
 
 log = logging.getLogger(__name__)
 
@@ -46,11 +50,41 @@ IMAGE_STORAGE_ROOT: str = os.environ.get("IMAGE_STORAGE_ROOT", "/data/panoptic/i
 IMAGE_MAX_SIZE_BYTES: int = int(os.environ.get("IMAGE_MAX_SIZE_BYTES", "2097152"))
 
 
-def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_version: str = "v1") -> FastAPI:
-    """Create and return the FastAPI app with background finalizer."""
+def create_app(
+    engine,
+    r: redis.Redis,
+    model_profile: str = "default",
+    prompt_version: str = "v1",
+    health_state: HealthState | None = None,
+    database_url: str | None = None,
+    redis_url: str | None = None,
+) -> FastAPI:
+    """Create and return the FastAPI app with background finalizer + HMAC auth."""
 
     app = FastAPI(title="Panoptic Trailer Webhook", version="1.0")
     _finalizer_task: asyncio.Task | None = None
+
+    # ------------------------------------------------------------------
+    # HMAC auth middleware — only attached if auth is enabled.
+    # In dev-mode-disabled mode, the middleware is skipped entirely so the
+    # startup warn-loop is the only signal.
+    # ------------------------------------------------------------------
+    if AUTH_ENABLED:
+        if database_url is None or redis_url is None:
+            raise RuntimeError(
+                "create_app requires database_url and redis_url when auth is enabled"
+            )
+        registry = TrailerRegistry(database_url=database_url)
+        try:
+            registry.force_refresh()
+        except Exception as exc:
+            log.warning("initial trailer registry load failed (will retry): %s", exc)
+        replay = ReplayCache(redis_url=redis_url)
+        app.add_middleware(
+            TrailerAuthMiddleware,
+            registry=registry,
+            replay=replay,
+        )
 
     # ------------------------------------------------------------------
     # Background finalizer
@@ -91,6 +125,10 @@ def create_app(engine, r: redis.Redis, model_profile: str = "default", prompt_ve
 
     @app.get("/health")
     async def health():
+        if health_state is not None:
+            snap = health_state.snapshot()
+            http_code = 503 if snap.get("status") == "error" else 200
+            return JSONResponse(snap, status_code=http_code)
         return {"status": "ok"}
 
     # ------------------------------------------------------------------

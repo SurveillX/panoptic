@@ -358,3 +358,30 @@ class PanopticImage(Base):
         Index("ix_panoptic_images_trigger_time", "trigger", "bucket_start_utc"),
         Index("ix_panoptic_images_created_at", "created_at"),
     )
+
+
+class PanopticTrailer(Base):
+    """
+    Known-trailer registry for HMAC-signed ingest auth.
+
+    See docs/AUTH_DESIGN.md §10.
+    """
+
+    __tablename__ = "panoptic_trailers"
+
+    serial_number: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("true")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_panoptic_trailers_is_active", "is_active"),
+    )
