@@ -135,19 +135,32 @@ PROBE_REGISTRY: dict[str, Callable[..., DepStatus]] = {
 
 
 def _probe_consumer_stats(*, redis_url: str, stream: str, group: str) -> tuple[int, int]:
-    """Return (pending_pel, xlen) for the given stream/group."""
+    """
+    Return (pending_pel, xlen) for the given stream/group.
+
+    Per-call Redis client with explicit close() + pool disconnect in a
+    finally — same rationale as _probe_redis. Earlier version leaked a
+    pool per probe.
+    """
     r = redis_module.Redis.from_url(redis_url, decode_responses=True)
-    xlen = r.xlen(stream)
     try:
-        pending = r.xpending(stream, group)
-        # redis-py returns dict or a summary tuple depending on version
-        if isinstance(pending, dict):
-            pel = int(pending.get("pending", 0))
-        else:
-            pel = int(pending[0]) if pending else 0
-    except Exception:
-        pel = 0
-    return pel, xlen
+        xlen = r.xlen(stream)
+        try:
+            pending = r.xpending(stream, group)
+            # redis-py returns dict or a summary tuple depending on version
+            if isinstance(pending, dict):
+                pel = int(pending.get("pending", 0))
+            else:
+                pel = int(pending[0]) if pending else 0
+        except Exception:
+            pel = 0
+        return pel, xlen
+    finally:
+        try:
+            r.close()
+            r.connection_pool.disconnect()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
