@@ -6,7 +6,7 @@ aggregates signals and summaries, then calls the LLM to produce
 a single combined summary.
 
 Usage:
-    VLLM_MODEL=gemma-4-e4b-it DATABASE_URL=postgresql://user:pass@localhost/dbname \
+    VLLM_MODEL=gemma-4-26b-it DATABASE_URL=postgresql://user:pass@localhost/dbname \
         PYTHONPATH=. python -m services.multi_camera_summary \
         --cameras cam-01 cam-02 \
         --start 2026-04-08T00:00:00+00:00 \

@@ -13,7 +13,7 @@ Retry policy:
 Configuration (environment variables):
   VLLM_BASE_URL     — base URL of the vLLM server  (default: http://localhost:8000)
   VLLM_TOKEN        — bearer token; empty string = no Authorization header sent
-  VLLM_MODEL        — model name in the request     (default: llava-v1.6-mistral-7b)
+  VLLM_MODEL        — model name in the request     (default: gemma-4-26b-it)
   VLLM_TIMEOUT_SEC  — per-request timeout in seconds (default: 60)
   VLLM_MAX_TOKENS   — max tokens in the response     (default: 1024)
   VLLM_TEMPERATURE  — sampling temperature           (default: 0.0)
@@ -35,7 +35,7 @@ log = logging.getLogger(__name__)
 
 VLLM_BASE_URL:    str   = os.environ.get("VLLM_BASE_URL", "http://localhost:8000")
 VLLM_TOKEN:       str   = os.environ.get("VLLM_TOKEN", "")
-VLLM_MODEL:       str   = os.environ.get("VLLM_MODEL", "llava-v1.6-mistral-7b")
+VLLM_MODEL:       str   = os.environ.get("VLLM_MODEL", "gemma-4-26b-it")
 VLLM_TIMEOUT_SEC: float = float(os.environ.get("VLLM_TIMEOUT_SEC", "60"))
 VLLM_MAX_TOKENS:  int   = int(os.environ.get("VLLM_MAX_TOKENS", "1024"))
 VLLM_TEMPERATURE: float = float(os.environ.get("VLLM_TEMPERATURE", "0.0"))
