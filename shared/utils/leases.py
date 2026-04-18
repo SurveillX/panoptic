@@ -448,10 +448,26 @@ class LeaseExpiredError(Exception):
 # ---------------------------------------------------------------------------
 
 @dataclass
+class ReclaimedJob:
+    """A job that was reset to pending by the reclaimer, ready for re-enqueue."""
+    job_id: str
+    job_type: str
+    serial_number: str
+
+
+@dataclass
 class ReclaimStats:
     reset_to_pending: int = 0
     sent_to_dlq: int = 0
     stale_pel_acked: int = 0
+    # List of jobs whose state was reset to pending during this tick.
+    # The reclaim function does NOT re-enqueue; callers (the reclaimer
+    # process) are expected to XADD each of these to the appropriate stream.
+    reset_jobs: list[ReclaimedJob] = None
+
+    def __post_init__(self) -> None:
+        if self.reset_jobs is None:
+            self.reset_jobs = []
 
 
 def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
@@ -590,6 +606,13 @@ def reclaim_expired_leases(engine, r: redis.Redis) -> ReclaimStats:
                 # Step 2: COMMIT
                 conn.commit()
                 stats.reset_to_pending += 1
+                stats.reset_jobs.append(
+                    ReclaimedJob(
+                        job_id=str(row.job_id),
+                        job_type=row.job_type,
+                        serial_number=row.serial_number,
+                    )
+                )
 
     # ------------------------------------------------------------------
     # Phase 2: PEL cleanup via XAUTOCLAIM

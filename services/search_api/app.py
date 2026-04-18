@@ -32,6 +32,7 @@ def create_app(
     engine,
     embedder: EmbeddingClient | None = None,
     vlm: VLMClient | None = None,
+    health_state=None,
 ) -> FastAPI:
     app = FastAPI(title="Panoptic Search API", version="1.0")
     _embedder = embedder or EmbeddingClient()
@@ -39,6 +40,10 @@ def create_app(
 
     @app.get("/health")
     def health():
+        if health_state is not None:
+            snap = health_state.snapshot()
+            http_code = 503 if snap.get("status") == "error" else 200
+            return JSONResponse(snap, status_code=http_code)
         return {"status": "ok"}
 
     @app.post("/v1/search")

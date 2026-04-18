@@ -36,8 +36,12 @@ from shared.utils.leases import (
 from shared.clients.continuum import CONTINUUM_BASE_URL_TEMPLATE, get_continuum_client
 from shared.clients.keyframe import KEYFRAME_BASE_URL, KEYFRAME_TOKEN, get_keyframe_client
 from shared.clients.vlm import VLLM_BASE_URL, get_vlm_client
+from shared.health.probes import start_probe_loop
+from shared.health.server import start_health_server
+from shared.health.state import HealthState
 from shared.utils.redis_client import get_redis_client
 from shared.utils.streams import (
+    CONSUMER_GROUP_FOR_STREAM,
     GROUP_FOR_JOB_TYPE,
     STREAM_FOR_JOB_TYPE,
     ack_message,
@@ -319,6 +323,31 @@ def main() -> None:
 
     bootstrap_streams(r)
     worker_id = generate_worker_id()
+
+    # Health endpoint + background dep probes
+    stream = STREAM_FOR_JOB_TYPE["bucket_summary"]
+    health = HealthState(
+        service_name="panoptic_summary_agent",
+        worker_id=worker_id,
+        consumer_stream=stream,
+        consumer_group=CONSUMER_GROUP_FOR_STREAM[stream],
+    )
+    health.mark_critical("postgres", "redis")
+    targets = {
+        "postgres": {"database_url": DATABASE_URL},
+        "redis": {"redis_url": os.environ.get("REDIS_URL", "redis://localhost:6379")},
+    }
+    if VLLM_BASE_URL:
+        targets["vllm"] = {"vllm_url": VLLM_BASE_URL}
+    start_health_server(
+        port=int(os.environ.get("SUMMARY_HEALTH_PORT", "8203")),
+        state=health,
+    )
+    start_probe_loop(
+        health,
+        targets=targets,
+        consumer_probe=(stream, CONSUMER_GROUP_FOR_STREAM[stream]),
+    )
 
     run_worker(engine, r, worker_id, keyframe_client, vlm_client, continuum_client)
 

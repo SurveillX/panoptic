@@ -20,6 +20,9 @@ import uvicorn
 from sqlalchemy import create_engine
 
 from services.search_api.app import create_app
+from shared.health.probes import start_probe_loop
+from shared.health.state import HealthState
+from shared.utils.leases import generate_worker_id
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +38,19 @@ def main() -> None:
     )
 
     engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-    app = create_app(engine)
+
+    health = HealthState(service_name="search_api", worker_id=generate_worker_id())
+    health.mark_critical("postgres", "qdrant", "retrieval")
+    start_probe_loop(
+        health,
+        targets={
+            "postgres": {"database_url": DATABASE_URL},
+            "qdrant": {"qdrant_url": os.environ.get("QDRANT_URL", "http://localhost:6333")},
+            "retrieval": {"retrieval_url": os.environ.get("RETRIEVAL_BASE_URL", "http://localhost:8700")},
+        },
+    )
+
+    app = create_app(engine, health_state=health)
 
     log.info("starting search_api host=%s port=%d", SEARCH_HOST, SEARCH_PORT)
     uvicorn.run(app, host=SEARCH_HOST, port=SEARCH_PORT, log_level="info")

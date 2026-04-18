@@ -35,8 +35,12 @@ from shared.utils.leases import (
     generate_worker_id,
     release_job,
 )
+from shared.health.probes import start_probe_loop
+from shared.health.server import start_health_server
+from shared.health.state import HealthState
 from shared.utils.redis_client import get_redis_client
 from shared.utils.streams import (
+    CONSUMER_GROUP_FOR_STREAM,
     GROUP_FOR_JOB_TYPE,
     STREAM_FOR_JOB_TYPE,
     ack_message,
@@ -266,6 +270,29 @@ def main() -> None:
 
     bootstrap_streams(r)
     worker_id = generate_worker_id()
+
+    # Health endpoint + background dep probes
+    stream = STREAM_FOR_JOB_TYPE["image_caption"]
+    health = HealthState(
+        service_name="panoptic_image_caption_worker",
+        worker_id=worker_id,
+        consumer_stream=stream,
+        consumer_group=CONSUMER_GROUP_FOR_STREAM[stream],
+    )
+    health.mark_critical("postgres", "redis")
+    start_health_server(
+        port=int(os.environ.get("CAPTION_HEALTH_PORT", "8201")),
+        state=health,
+    )
+    start_probe_loop(
+        health,
+        targets={
+            "postgres": {"database_url": DATABASE_URL},
+            "redis": {"redis_url": os.environ.get("REDIS_URL", "redis://localhost:6379")},
+            "vllm": {"vllm_url": vlm_client._base_url},
+        },
+        consumer_probe=(stream, CONSUMER_GROUP_FOR_STREAM[stream]),
+    )
 
     run_worker(engine, r, worker_id, vlm_client)
 
