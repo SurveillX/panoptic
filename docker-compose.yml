@@ -1,0 +1,151 @@
+name: panoptic
+
+# Containerized Panoptic app stack — webhook, 7 workers, reclaimer, and
+# the Search API. Each worker is a separate service so restarts are
+# surgical (tmux-dev.sh and this file are 1:1).
+#
+# Networking: host mode. The workers already talk to panoptic-store,
+# panoptic-vllm, and panoptic-retrieval over localhost. Host mode keeps
+# the existing .env URLs working unchanged. Each worker binds a unique
+# /healthz port (8201-8206, 8210, 8100, 8600) so there are no collisions.
+#
+# Depends on: panoptic-store (postgres/qdrant/redis) + panoptic-vllm +
+# panoptic-retrieval all running on the host. Bring those up first.
+# Workers already tolerate transient connection failures (M4), so
+# stack-level dependency ordering isn't enforced here.
+#
+# Dev iteration:
+#   docker compose up -d             # start everything
+#   docker compose logs -f caption   # follow one worker
+#   docker compose restart caption   # after a code edit (bind-mount)
+#   docker compose ps                # health status
+#
+# The code bind-mount means you don't rebuild the image for every edit.
+# Rebuild only when pyproject.toml changes:
+#   docker compose build
+#   docker compose up -d
+
+x-worker-base: &worker-base
+  image: panoptic:latest
+  restart: unless-stopped
+  network_mode: host
+  env_file: .env
+  volumes:
+    - .:/app:ro
+    # /data/panoptic-store/images is the single shared image store;
+    # every worker needs read access, image_caption_worker needs write.
+    - /data/panoptic-store/images:/data/panoptic-store/images
+  # Docker default log driver rotates to keep disk bounded. Without this
+  # a busy worker can fill /var/lib/docker.
+  logging:
+    driver: json-file
+    options:
+      max-size: "50m"
+      max-file: "5"
+
+services:
+  webhook:
+    <<: *worker-base
+    # Only one service declares `build:` so `docker compose build` produces
+    # exactly one image — all other services reuse `panoptic:latest`.
+    build: .
+    container_name: panoptic-webhook
+    command: python -m services.trailer_webhook.server
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8100/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  caption:
+    <<: *worker-base
+    container_name: panoptic-caption
+    command: python -m services.panoptic_image_caption_worker.worker
+    # Needs write access to the image tree — override the :ro default.
+    volumes:
+      - .:/app:ro
+      - /data/panoptic-store/images:/data/panoptic-store/images
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8201/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  cap_embed:
+    <<: *worker-base
+    container_name: panoptic-cap-embed
+    command: python -m services.panoptic_caption_embed_worker.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8202/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  img_embed:
+    <<: *worker-base
+    container_name: panoptic-img-embed
+    command: python -m services.panoptic_image_embed_worker.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8206/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  summary:
+    <<: *worker-base
+    container_name: panoptic-summary
+    command: python -m services.panoptic_summary_agent.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8203/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  sum_embed:
+    <<: *worker-base
+    container_name: panoptic-sum-embed
+    command: python -m services.panoptic_embedding_worker.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8204/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  rollup:
+    <<: *worker-base
+    container_name: panoptic-rollup
+    command: python -m services.panoptic_rollup_worker.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8205/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  reclaimer:
+    <<: *worker-base
+    container_name: panoptic-reclaimer
+    command: python -m services.panoptic_reclaimer.worker
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8210/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  search_api:
+    <<: *worker-base
+    container_name: panoptic-search-api
+    command: python -m services.search_api.server
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8600/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# Start all panoptic workers in a tmux session, one window per process.
-# Logs also tee'd to ~/panoptic/logs/<name>.log.
+# DEV-ONLY alternative to docker-compose.yml (M7).
+#
+# The canonical bring-up is `docker compose up -d` at the repo root.
+# This script is retained because it lets you edit code and see
+# process output inline without rebuilding or restarting containers.
+#
+# Don't run this AND compose at the same time — they fight for the
+# same ports (webhook 8100, search 8600, healthz 8201-8206/8210).
 #
 #   start:   ./scripts/tmux-dev.sh
 #   attach:  tmux a -t panoptic

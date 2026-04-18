@@ -121,7 +121,7 @@ Alembic at migration **007**.
 | M5 | VL image retrieval (+ opt-in VL final rerank) | ✅ done |
 | M4 | Full idempotency + crash-recovery validation | ✅ done — 6/6 dep-outage tests, worker-restart-storm + duplicate-flood both verified |
 | M6 | Move panoptic-store to dedicated machine | pending (blocked on hardware) |
-| M7 | Containerize workers | pending |
+| M7 | Containerize workers | ✅ done — `docker compose up -d` brings up the 9-service stack, all healthy, end-to-end push + search verified through containers |
 
 ---
 
@@ -245,11 +245,15 @@ cd ~/panoptic-store && docker compose up -d
 # GPU services
 cd ~/panoptic-retrieval && docker compose up -d
 cd ~/panoptic-vllm && docker compose up -d
-# Application (9 workers in tmux)
-cd ~/panoptic && ./scripts/tmux-dev.sh
+# Application (9 containers — M7)
+cd ~/panoptic && docker compose up -d
 # Ingress tunnel
 sudo systemctl start frpc
 ```
+
+Dev-only alternative: `cd ~/panoptic && ./scripts/tmux-dev.sh` runs the
+9 workers directly in a tmux session using the host venv. Don't run
+both — they collide on ports.
 
 ### Status
 
@@ -352,13 +356,12 @@ operational gaps:
 - Decide Tailscale MagicDNS vs DHCP + router DNS for service discovery.
 - Rehearse backup/restore on the target host before migrating live data.
 
-**M7 — containerize workers:**
-- `Dockerfile` at `~/panoptic/` root (base image, venv, deps).
-- `docker-compose.yml` with one service per worker + `webhook` +
-  `search_api` + `reclaimer`.
-- Decision: bind-mount source vs bake. (Bind-mount for iteration speed
-  during dev; bake for reproducibility in prod.)
-- Keep `scripts/tmux-dev.sh` as a dev-only option.
+**M7 — containerize workers (✅ done):**
+Dockerfile + docker-compose.yml landed. 9 services (webhook, 7 workers,
+search_api) on host network mode, source bind-mounted for dev iteration,
+json-file log rotation (50MB × 5 files). `tmux-dev.sh` kept as an
+alternative for deep code-edit loops. Full stack healthy end-to-end on
+first boot.
 
 **Optional — VL rerank A/B:**
 - Hand-label ~20 real-trailer queries with ground-truth relevant images.
