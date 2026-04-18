@@ -49,18 +49,43 @@ def _timed(fn: Callable[[], None]) -> tuple[bool, int | None, str | None]:
 
 
 def _probe_postgres(*, database_url: str) -> DepStatus:
+    """
+    One-shot Postgres liveness probe. Uses psycopg2 directly (no SQLAlchemy
+    engine / pool) so each probe call opens and closes exactly one TCP
+    connection. Prior implementation created a new SQLAlchemy engine per
+    probe — the pools leaked and exhausted Postgres's max_connections
+    after ~10 hours of 30s probing across 8 workers.
+    """
+    import psycopg2
+
     def _do():
-        engine = sa.create_engine(database_url, pool_pre_ping=False, connect_args={"connect_timeout": int(PROBE_TIMEOUT_SEC)})
-        with engine.connect() as c:
-            c.execute(sa.text("SELECT 1"))
+        conn = psycopg2.connect(database_url, connect_timeout=int(PROBE_TIMEOUT_SEC))
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        finally:
+            conn.close()
     ok, ms, reason = _timed(_do)
     return DepStatus(ok=ok, latency_ms=ms, reason=reason, checked_at=_utcnow_iso())
 
 
 def _probe_redis(*, redis_url: str) -> DepStatus:
+    """
+    One-shot Redis liveness probe. Explicitly closes the client + its
+    connection pool after every probe so we don't leak pools the way the
+    old Postgres probe did.
+    """
     def _do():
         r = redis_module.Redis.from_url(redis_url, socket_connect_timeout=PROBE_TIMEOUT_SEC, socket_timeout=PROBE_TIMEOUT_SEC)
-        r.ping()
+        try:
+            r.ping()
+        finally:
+            try:
+                r.close()
+                r.connection_pool.disconnect()
+            except Exception:
+                pass
     ok, ms, reason = _timed(_do)
     return DepStatus(ok=ok, latency_ms=ms, reason=reason, checked_at=_utcnow_iso())
 

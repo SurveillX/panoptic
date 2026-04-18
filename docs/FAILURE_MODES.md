@@ -218,6 +218,35 @@ snapshots accumulate at `/data/panoptic-store/qdrant/snapshots/`.
 
 ---
 
+## 10. Health-probe connection leak (fixed)
+
+**Symptom:** after ~10 hours of real traffic, workers started reporting
+`✗postgres` on `/healthz` even though Postgres itself was fine.
+`pg_stat_activity` showed ~90/100 connections in use, and new
+connections failed with `FATAL: sorry, too many clients already`.
+
+**Root cause:** `shared/health/probes._probe_postgres()` was creating a
+brand-new SQLAlchemy engine (and its connection pool) on every 30 s
+probe without disposing it. With 8 workers probing every 30 s, we were
+allocating pools faster than GC was reclaiming them. Same latent leak
+existed in `_probe_redis()`, just less impactful because Redis tolerates
+many more concurrent clients.
+
+**Fix:** `_probe_postgres()` now uses `psycopg2.connect(...)` directly
+and explicitly `conn.close()`s — one TCP connection opened and closed
+per probe, no pool. `_probe_redis()` explicitly calls `r.close()` and
+`r.connection_pool.disconnect()` after `ping`.
+
+**Verified:** after the fix and a full tmux-session restart,
+`pg_stat_activity` reports 3 connections total (1 active + 2 idle) —
+down from ~90.
+
+**Lesson:** any per-probe resource should be scoped to the probe call
+and explicitly released. The original mental model was "SA will GC the
+engine" — true eventually, but not reliably enough for a 30 s loop.
+
+---
+
 ## Open gaps
 
 - Alerting on disk usage / health degradation (today's only surface is
