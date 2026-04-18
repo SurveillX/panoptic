@@ -20,6 +20,7 @@ import uvicorn
 from sqlalchemy import create_engine
 
 from services.search_api.app import create_app
+from services.search_api.warmup import start_warmup
 from shared.health.probes import start_probe_loop
 from shared.health.state import HealthState
 from shared.utils.leases import generate_worker_id
@@ -51,6 +52,10 @@ def main() -> None:
     )
 
     app = create_app(engine, health_state=health)
+
+    # Pre-warm the retrieval-service rerank path so the first real /v1/search
+    # doesn't pay the ~100s torch.compile cost. Runs in the background.
+    start_warmup(delay_sec=2.0)
 
     log.info("starting search_api host=%s port=%d", SEARCH_HOST, SEARCH_PORT)
     uvicorn.run(app, host=SEARCH_HOST, port=SEARCH_PORT, log_level="info")

@@ -314,8 +314,19 @@ def main() -> None:
             "all summaries will use call_llm_stub"
         )
 
-    # Continuum client takes precedence over KeyframeClient when set
-    if CONTINUUM_BASE_URL_TEMPLATE and "{serial_number}" in CONTINUUM_BASE_URL_TEMPLATE:
+    # Continuum client takes precedence over KeyframeClient when set.
+    # Dev escape hatch: PANOPTIC_CONTINUUM_DISABLED=true skips initialization
+    # so we don't pay the SSL-timeout cost against non-existent trailer
+    # hostnames during local dev / synthetic-data seeding. All summaries
+    # will produce in metadata_only mode when disabled.
+    continuum_disabled = os.environ.get("PANOPTIC_CONTINUUM_DISABLED", "").lower() == "true"
+    if continuum_disabled:
+        continuum_client = None
+        log.warning(
+            "PANOPTIC_CONTINUUM_DISABLED=true — keyframe fetching skipped; "
+            "all summaries will run in metadata_only mode"
+        )
+    elif CONTINUUM_BASE_URL_TEMPLATE and "{serial_number}" in CONTINUUM_BASE_URL_TEMPLATE:
         continuum_client = get_continuum_client()
         log.info("Continuum configured: %s", CONTINUUM_BASE_URL_TEMPLATE)
     else:
