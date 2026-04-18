@@ -88,87 +88,101 @@ reason `unknown error`; inserted a stub image row; replayed with
 
 ## 3. Redis briefly unavailable
 
-**Status:** not yet simulated on live traffic. Planned M4 smoke.
+**Status:** verified 2026-04-18 with a 10s docker stop and a follow-up 15s stop.
 
-Expected behavior (by design):
-- Webhook: XADD fails → returns 503 to trailer. Trailer retries on its
-  own cadence.
-- Workers: `XREADGROUP` with BLOCK returns None after timeout → inner
-  loop continues, retries on next tick. No state change in Postgres.
-- Reclaimer: Phase-1 Postgres reset completes; Phase-2 XAUTOCLAIM
-  raises, is caught, logged, tick continues. No data loss.
-- Dashboard: `/healthz` `deps.redis.ok = false` → status=`error` →
-  HTTP 503.
+**First run (before fix):** every one of the six job-processing workers
+(caption / cap_embed / summary / sum_embed / rollup / img_embed) died.
+The `XREADGROUP` call in `consume_next()` raised
+`redis.exceptions.ConnectionError` out of the worker's outer loop —
+the only `try/except` was around `_process_message`, not
+`consume_next`. Workers had to be manually respawned.
 
-Recovery on Redis restart: workers resume blocking reads; in-flight
-state in Postgres is intact; any PEL entries held during the outage
-will be picked up by XAUTOCLAIM on the next reclaimer tick.
+**Fix:** `shared/utils/streams.consume_next()` now catches
+`ConnectionError` and `TimeoutError` from redis-py, logs a backoff
+warning, sleeps 1 s, and returns None. Outer loop sees "no messages"
+and retries naturally.
+
+**Second run (after fix):** zero worker deaths. All panes logged
+`consume_next: Redis unavailable — backing off 1s: Error 111
+connecting to panoptic-store:6379. Connection refused.` repeatedly
+during the outage, then resumed cleanly when Redis came back. The
+dashboard transitioned `redis` OK → error → OK over the next probe
+cycle (30 s). Webhook finalizer caught its own Redis errors as it
+already did (pre-existing try/except).
+
+**Recovery semantics:**
+- Workers resume blocking reads; in-flight state in Postgres is
+  intact.
+- PEL entries held during the outage are picked up by XAUTOCLAIM on
+  the next reclaimer tick.
+- Trailer pushes during the outage return 5xx — trailer retries via
+  its at-least-once semantics.
 
 ---
 
 ## 4. Postgres briefly unavailable
 
-**Status:** not yet simulated on live traffic.
+**Status:** verified 2026-04-18 with a 15s docker stop.
 
-Expected behavior:
-- Webhook: SQLAlchemy raises `OperationalError`, bucket dedup write to
-  Redis happens first but the image INSERT fails — trailer sees 500.
-  Trailer retries; Redis SETNX on bucket event_id will mark it duplicate
-  since the Redis write already happened, so subsequent bucket pushes for
-  the same event_id return `duplicate` (that's correct behavior — we
-  already processed the fragment).
-- Workers: claim_job fails → next loop iteration. No state mutation
-  observable externally.
-- Reclaimer: whole tick fails, caught in the outer `except`, next tick
-  in 30s. No data loss.
+Observed: zero worker deaths. Reclaimer logged
+`reclaimer: tick failed (continuing): (psycopg2.OperationalError)
+connection to server at "panoptic-store" (127.0.0.1), port 5432
+failed: Connection refused` once during the window, its outer
+`try/except` caught it, next tick succeeded. No non-terminal jobs left
+behind after recovery (387 jobs total, zero stuck).
 
-Recovery: workers resume on next tick once DB is back.
+Workers didn't emit Postgres errors simply because no jobs were
+claimable during the brief window — but the code path is correct: the
+outer `except` in each worker's `run_worker()` catches exceptions from
+`_process_message`, logs, and continues.
+
+Trailer pushes during the outage would get 500 (FastAPI endpoint
+exception → HTTP 500). Trailer retries.
 
 ---
 
 ## 5. Qdrant briefly unavailable
 
-**Status:** not yet simulated.
+**Status:** verified 2026-04-18 with a 15s docker stop.
 
-Expected behavior:
-- `caption_embed_worker` / `embedding_worker` / `image_embed_worker`
-  raise on upsert → caught by worker's outer `except`, job moves to
-  `retry_wait`. Up to `max_attempts` retries with backoff. If the
-  outage exceeds all retries → DLQ.
-- `search_api`: `/v1/search` returns 500 (or degraded results if
-  `_search()` 404 fallback kicks in for a missing collection).
+Observed: zero worker deaths, `/v1/search` returned HTTP 500 with
+`{"error":"search failed","detail":"[Errno 111] Connection refused"}`
+during the outage. First search after restart returned 9 results in
+335ms — full recovery.
 
-Recovery: Qdrant comes back → next retry succeeds. DLQ replay for
-anything that exhausted attempts.
+Workers' outer `except` would push any in-flight embedding job to
+`retry_wait` (verified by code path — no actual jobs triggered
+during this brief window). Max 3 attempts before DLQ.
 
 ---
 
 ## 6. vLLM (Gemma) briefly unavailable
 
-**Status:** not yet simulated.
+**Status:** verified 2026-04-18 with a 15s docker stop. Worth noting
+vLLM takes 30s+ to reload Gemma (model weights + compile) on restart,
+so its recovery is slower than the stateless services.
 
-Expected behavior:
-- `image_caption_worker` raises `VLMNetworkError` →
-  `job_state = 'retry_wait'` with backoff. Jobs accumulate on the
-  stream but don't progress.
-- `summary_agent` has partial degradation — it already falls back to
-  `metadata_only` mode when Continuum returns 404. If vLLM itself is
-  down, the summary text-generation call fails and the job retries.
+Observed: zero worker deaths. `/v1/search/verify` during outage
+returned 500 with `"detail":"[Errno 104] Connection reset by peer"`.
+No in-flight caption/summary/rollup jobs during the window, so no
+retry_wait activity observed directly — but the code path is the
+standard `try/except` → `retry_wait` → up to 3 attempts → DLQ.
 
-Recovery: vLLM returns → next retry succeeds. Deep backlog drains at
-worker throughput.
+Recovery: vLLM returns after ~30-60s (Gemma model reload is the long
+part) → next retry succeeds. Deep backlog drains at worker throughput.
 
 ---
 
 ## 7. Retrieval service briefly unavailable
 
-**Status:** not yet simulated.
+**Status:** verified 2026-04-18 with a 15s docker stop.
 
-Expected behavior:
-- Text and VL embedding calls fail → `caption_embed_worker` /
-  `embedding_worker` / `image_embed_worker` retry via `retry_wait`.
-- `search_api`: `/v1/search` can't embed the query — returns 500.
-  Warmup path handles this gracefully (already coded).
+Observed: zero worker deaths. `/v1/search` returned 500 during
+outage. Search API recovered immediately on restart — first post-
+restart query completed in 335ms.
+
+Workers' outer `except` handles in-flight embedding failures the same
+way as Qdrant above (retry_wait → DLQ after max_attempts).
 
 ---
 
