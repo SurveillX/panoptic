@@ -64,6 +64,56 @@ def ensure_collection(vector_size: int) -> None:
 
 
 _IMAGE_CAPTION_COLLECTION = "image_caption_vectors"
+_IMAGE_VECTOR_COLLECTION = "panoptic_image_vectors"
+
+
+def ensure_image_vector_collection(vector_size: int) -> None:
+    """
+    Create the panoptic_image_vectors collection for VL-native image
+    embeddings if it does not exist. Same 4096-dim cosine shape as the
+    caption-based collection; different semantic space.
+    """
+    url = f"{QDRANT_URL}/collections/{_IMAGE_VECTOR_COLLECTION}"
+    resp = httpx.get(url, timeout=_TIMEOUT)
+    if resp.status_code == 200:
+        log.debug("Qdrant collection %s already exists", _IMAGE_VECTOR_COLLECTION)
+        return
+    create_resp = httpx.put(
+        url,
+        json={"vectors": {"size": vector_size, "distance": "Cosine"}},
+        timeout=_TIMEOUT,
+    )
+    create_resp.raise_for_status()
+    log.info("created Qdrant collection %s size=%d", _IMAGE_VECTOR_COLLECTION, vector_size)
+
+
+def upsert_image_vector_point(image_id: str, vector: list[float], payload: dict) -> str:
+    """
+    Upsert a single point into the panoptic_image_vectors collection.
+
+    Point ID derivation matches the caption collection: first 32 hex
+    chars of the SHA256 image_id, formatted as UUID. Same image_id
+    always maps to the same Qdrant point.
+    """
+    qdrant_id = str(_uuid.UUID(image_id[:32]))
+    url = f"{QDRANT_URL}/collections/{_IMAGE_VECTOR_COLLECTION}/points"
+    resp = httpx.put(
+        url,
+        json={"points": [{"id": qdrant_id, "vector": vector, "payload": payload}]},
+        timeout=_TIMEOUT,
+    )
+    resp.raise_for_status()
+    log.debug("upserted Qdrant image vector image_id=%s qdrant_id=%s", image_id, qdrant_id)
+    return qdrant_id
+
+
+def search_image_vectors(
+    vector: list[float],
+    payload_filter: dict | None = None,
+    top_k: int = 10,
+) -> list[dict]:
+    """Visual semantic search over the panoptic_image_vectors collection."""
+    return _search(_IMAGE_VECTOR_COLLECTION, vector, payload_filter, top_k)
 
 
 def ensure_image_caption_collection(vector_size: int) -> None:

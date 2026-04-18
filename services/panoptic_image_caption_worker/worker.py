@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, text
 
 from services.panoptic_image_caption_worker.executor import run_image_caption_job
 from shared.clients.vlm import get_vlm_client
-from shared.schemas.job import make_caption_embed_key
+from shared.schemas.job import make_caption_embed_key, make_image_embed_key
 from shared.utils.leases import (
     LeaseHeartbeat,
     claim_job,
@@ -122,10 +122,19 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
                 last_error = str(exc)[:1000]
                 should_chain = False
 
-            # -- Chain: create caption_embed job if caption succeeded --
+            # -- Chain: create caption_embed + image_embed jobs if caption
+            # succeeded. Both are orthogonal downstream jobs on the same
+            # image (text-caption space vs VL-image space), so they run in
+            # parallel. --
+            image_embed_chain_job_id: str | None = None
             if should_chain and job_state == "succeeded":
                 image_id = job_row.payload["image_id"]
-                chain_key = make_caption_embed_key(image_id)
+                chain_payload = json.dumps({
+                    "image_id": image_id,
+                    "serial_number": claim.serial_number,
+                })
+
+                # caption_embed
                 chain_result = conn.execute(
                     text("""
                         INSERT INTO panoptic_jobs (
@@ -138,16 +147,34 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
                         RETURNING job_id
                     """),
                     {
-                        "job_key": chain_key,
+                        "job_key": make_caption_embed_key(image_id),
                         "serial_number": claim.serial_number,
-                        "payload": json.dumps({
-                            "image_id": image_id,
-                            "serial_number": claim.serial_number,
-                        }),
+                        "payload": chain_payload,
                     },
                 )
                 chain_row = chain_result.fetchone()
                 chain_job_id = str(chain_row.job_id) if chain_row else None
+
+                # image_embed (VL-native)
+                img_chain_result = conn.execute(
+                    text("""
+                        INSERT INTO panoptic_jobs (
+                            job_key, serial_number, job_type, payload
+                        ) VALUES (
+                            :job_key, :serial_number, 'image_embed',
+                            CAST(:payload AS jsonb)
+                        )
+                        ON CONFLICT (job_key) DO NOTHING
+                        RETURNING job_id
+                    """),
+                    {
+                        "job_key": make_image_embed_key(image_id),
+                        "serial_number": claim.serial_number,
+                        "payload": chain_payload,
+                    },
+                )
+                img_chain_row = img_chain_result.fetchone()
+                image_embed_chain_job_id = str(img_chain_row.job_id) if img_chain_row else None
 
             retry_delay = (
                 compute_retry_delay(job_row.attempt_count)
@@ -181,7 +208,9 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
             conn.commit()
 
     # ------------------------------------------------------------------
-    # Post-commit: enqueue caption_embed if chained
+    # Post-commit: enqueue caption_embed + image_embed if chained.
+    # Failures here are tolerable: the rows exist in Postgres, the
+    # reclaimer picks up pending work once a worker is alive to consume.
     # ------------------------------------------------------------------
     if chain_job_id is not None:
         try:
@@ -196,6 +225,21 @@ def _process_message(engine, r, msg, worker_id: str, vlm_client) -> bool:
                 "_process_message: caption_embed enqueue failed job_id=%s: %s "
                 "— job exists in Postgres, reclaimer will pick it up",
                 chain_job_id, exc,
+            )
+
+    if image_embed_chain_job_id is not None:
+        try:
+            enqueue_job(
+                r,
+                job_type="image_embed",
+                job_id=image_embed_chain_job_id,
+                serial_number=claim.serial_number,
+            )
+        except Exception as exc:
+            log.error(
+                "_process_message: image_embed enqueue failed job_id=%s: %s "
+                "— job exists in Postgres, reclaimer will pick it up",
+                image_embed_chain_job_id, exc,
             )
 
     # ------------------------------------------------------------------

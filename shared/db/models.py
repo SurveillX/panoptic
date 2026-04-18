@@ -338,6 +338,15 @@ class PanopticImage(Base):
     caption_embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     caption_embedding_vector_id: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # VL image-native embedding (Qwen3-VL-Embedding-8B via /embed_visual).
+    # Orthogonal to caption_embedding_* above — same image, different
+    # semantic space (pixels vs caption text).
+    image_embedding_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("'pending'")
+    )
+    image_embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    image_embedding_vector_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     source: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'trailer_push'")
     )

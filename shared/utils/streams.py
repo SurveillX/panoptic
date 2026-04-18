@@ -46,6 +46,7 @@ STREAM_FOR_JOB_TYPE: dict[str, str] = {
     "recompute_summary": "panoptic:jobs:recompute",
     "image_caption":     "panoptic:jobs:image_caption",
     "caption_embed":     "panoptic:jobs:caption_embed",
+    "image_embed":       "panoptic:jobs:image_embed",
 }
 
 DLQ_FOR_JOB_TYPE: dict[str, str] = {
@@ -55,6 +56,7 @@ DLQ_FOR_JOB_TYPE: dict[str, str] = {
     "recompute_summary": "panoptic:dlq:recompute",
     "image_caption":     "panoptic:dlq:image_caption",
     "caption_embed":     "panoptic:dlq:caption_embed",
+    "image_embed":       "panoptic:dlq:image_embed",
 }
 
 # Each stream has exactly one consumer group.
@@ -65,6 +67,7 @@ CONSUMER_GROUP_FOR_STREAM: dict[str, str] = {
     "panoptic:jobs:recompute":        "panoptic-recompute-workers",
     "panoptic:jobs:image_caption":    "panoptic-image-caption-workers",
     "panoptic:jobs:caption_embed":    "panoptic-caption-embed-workers",
+    "panoptic:jobs:image_embed":      "panoptic-image-embed-workers",
 }
 
 # Convenience: group name by job type.

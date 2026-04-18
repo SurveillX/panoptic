@@ -18,6 +18,7 @@ CAP_EMBED_URL="${CAP_EMBED_URL:-http://localhost:8202}"
 SUMMARY_URL="${SUMMARY_URL:-http://localhost:8203}"
 SUM_EMBED_URL="${SUM_EMBED_URL:-http://localhost:8204}"
 ROLLUP_URL="${ROLLUP_URL:-http://localhost:8205}"
+IMAGE_EMBED_URL="${IMAGE_EMBED_URL:-http://localhost:8206}"
 RECLAIMER_URL="${RECLAIMER_URL:-http://localhost:8210}"
 
 STORE_CONTAINERS=(panoptic-postgres panoptic-qdrant panoptic-redis)
@@ -119,6 +120,7 @@ _service_row "cap_embed"  "$CAP_EMBED_URL"
 _service_row "summary"    "$SUMMARY_URL"
 _service_row "sum_embed"  "$SUM_EMBED_URL"
 _service_row "rollup"     "$ROLLUP_URL"
+_service_row "img_embed"  "$IMAGE_EMBED_URL"
 _service_row "reclaimer"  "$RECLAIMER_URL"
 _service_row "search_api" "$SEARCH_URL"
 

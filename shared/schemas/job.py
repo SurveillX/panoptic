@@ -81,6 +81,10 @@ def make_caption_embed_key(image_id: str) -> str:
     return f"caption_embed:{image_id}"
 
 
+def make_image_embed_key(image_id: str) -> str:
+    return f"image_embed:{image_id}"
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
