@@ -233,10 +233,12 @@ def transform_to_bucket_record(
     object_counts = {f.object_type: f.unique_tracker_ids for f in fragments}
 
     # activity_components
+    # Treat None stats as 0 — trailer aggregator omits them when the bucket
+    # had too few samples for a meaningful statistic.
     total_detections = sum(f.total_detections for f in fragments)
     unique_classes = len(set(f.object_type for f in fragments))
-    max_std_dev = max(f.std_dev_count for f in fragments)
-    sum_mean_count = sum(f.mean_count for f in fragments)
+    max_std_dev = max((f.std_dev_count for f in fragments if f.std_dev_count is not None), default=0.0)
+    sum_mean_count = sum((f.mean_count or 0.0) for f in fragments)
     max_duty_cycle = max(f.duty_cycle for f in fragments)
 
     activity_components = {

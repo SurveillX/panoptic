@@ -30,8 +30,10 @@ class TrailerBucketData(BaseModel):
     min_count: int
     max_count: int
     mode_count: int
-    mean_count: float
-    std_dev_count: float
+    # Statistical aggregates — None when the trailer has too few samples
+    # (e.g. empty bucket) or when the aggregator hasn't populated them yet.
+    mean_count: float | None = None
+    std_dev_count: float | None = None
     # The following fields can be null when the trailer's anomaly scorer
     # hasn't accumulated a baseline yet, or when the bucket had no detections.
     # All downstream consumers must handle None gracefully.
