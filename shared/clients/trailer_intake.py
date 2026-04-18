@@ -280,9 +280,15 @@ def transform_to_bucket_record(
     event_markers = _derive_event_markers(fragments, bucket_start)
 
     # completeness
+    # Clamp duty_cycle into [0, 1] before deriving completeness values.
+    # Real trailer's aggregator reports duty_cycle > 1.0 (tracker-seconds
+    # over bucket-seconds with concurrent trackers — not the fraction-of-
+    # time-active our schema expects). Our BucketRecord.completeness has
+    # explicit ge=0 / le=1 bounds on these derived fields.
+    coverage = min(1.0, max(0.0, max_duty_cycle))
     completeness = {
-        "detection_coverage": max_duty_cycle,
-        "stream_interrupted_seconds": int(bucket_minutes * 60 * (1 - max_duty_cycle)),
+        "detection_coverage": coverage,
+        "stream_interrupted_seconds": max(0, int(bucket_minutes * 60 * (1 - coverage))),
         "aggregator_restart_seen": False,
     }
 
