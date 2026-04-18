@@ -30,15 +30,18 @@ class TrailerBucketData(BaseModel):
     mode_count: int
     mean_count: float
     std_dev_count: float
-    max_count_at: datetime
-    min_confidence: float
-    max_confidence: float
-    avg_confidence: float
-    first_detection_at: datetime
-    last_detection_at: datetime
+    # The following fields can be null when the trailer's anomaly scorer
+    # hasn't accumulated a baseline yet, or when the bucket had no detections.
+    # All downstream consumers must handle None gracefully.
+    max_count_at: datetime | None = None
+    min_confidence: float | None = None
+    max_confidence: float | None = None
+    avg_confidence: float | None = None
+    first_detection_at: datetime | None = None
+    last_detection_at: datetime | None = None
     active_seconds: float
     duty_cycle: float
-    anomaly_score: float
+    anomaly_score: float | None = None
     anomaly_flag: int
 
 

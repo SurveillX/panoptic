@@ -1,0 +1,25 @@
+# Panoptic Spark → DO droplet (surveillx-gateway) frp client config.
+# Installed to /etc/frp/frpc.toml with the __FRP_AUTH_TOKEN__ placeholder
+# replaced from a gitignored secret file. See install.sh in this directory.
+#
+# The panoptic.surveillx.ai hostname routes:
+#   browser/trailer → DO Caddy (TLS) → frps:8080 (vhost) → FRP tunnel
+#                   → this spark's frpc → localhost:8100 (panoptic webhook)
+
+serverAddr = "134.199.244.90"
+serverPort = 7000
+
+auth.method = "token"
+auth.token = "__FRP_AUTH_TOKEN__"
+
+log.to = "/var/log/frpc/frpc.log"
+log.level = "info"
+log.maxDays = 7
+
+# Expose the panoptic trailer webhook at panoptic.surveillx.ai.
+[[proxies]]
+name = "panoptic-webhook"
+type = "http"
+localIP = "127.0.0.1"
+localPort = 8100
+customDomains = ["panoptic.surveillx.ai"]

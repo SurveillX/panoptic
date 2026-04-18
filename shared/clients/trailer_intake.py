@@ -249,16 +249,29 @@ def transform_to_bucket_record(
     }
 
     # keyframe_candidates
-    # peak_ts: max_count_at from fragment with highest max_count
+    # peak_ts: max_count_at from fragment with highest max_count.
+    #          Fall back to bucket_start if the peak fragment has no timestamp
+    #          (e.g. zero-detection bucket where max_count_at is null).
     peak_frag = max(fragments, key=lambda f: f.max_count)
-    # baseline_ts: bucket start
-    # change_ts: earliest first_detection_at
-    earliest_detection = min(fragments, key=lambda f: f.first_detection_at)
+    peak_ts = (
+        peak_frag.max_count_at.isoformat()
+        if peak_frag.max_count_at is not None
+        else bucket_start.isoformat()
+    )
+
+    # change_ts: earliest first_detection_at across fragments that have one.
+    #            If no fragment saw a detection, use bucket_start.
+    detected = [f for f in fragments if f.first_detection_at is not None]
+    if detected:
+        earliest_detection = min(detected, key=lambda f: f.first_detection_at)
+        change_ts = earliest_detection.first_detection_at.isoformat()
+    else:
+        change_ts = bucket_start.isoformat()
 
     keyframe_candidates = {
         "baseline_ts": bucket_start.isoformat(),
-        "peak_ts": peak_frag.max_count_at.isoformat(),
-        "change_ts": earliest_detection.first_detection_at.isoformat(),
+        "peak_ts": peak_ts,
+        "change_ts": change_ts,
     }
 
     # event_markers
@@ -312,14 +325,22 @@ def _derive_event_markers(
     """Derive event markers from fragment data."""
     markers: list[dict] = []
 
-    # Spike: anomaly_flag == 1 and anomaly_score >= 0.7
+    # Spike: anomaly_flag == 1 and anomaly_score >= 0.7.
+    # Null anomaly_score means the scorer hasn't run yet — treat as not-a-spike.
+    # Null max_count_at means no peak timestamp — fall back to bucket_start.
     for frag in fragments:
-        if frag.anomaly_flag == 1 and frag.anomaly_score >= 0.7:
+        score = frag.anomaly_score
+        if frag.anomaly_flag == 1 and score is not None and score >= 0.7:
+            ts = (
+                frag.max_count_at.isoformat()
+                if frag.max_count_at is not None
+                else bucket_start.isoformat()
+            )
             markers.append({
-                "ts": frag.max_count_at.isoformat(),
+                "ts": ts,
                 "event_type": "spike",
                 "label": "activity_spike",
-                "confidence": min(frag.anomaly_score, 1.0),
+                "confidence": min(score, 1.0),
             })
 
     # After hours: bucket outside 06:00-21:00 UTC

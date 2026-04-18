@@ -1,0 +1,15 @@
+[Unit]
+Description=frpc — Panoptic Spark tunnel to surveillx-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
+Restart=on-failure
+RestartSec=5s
+# frpc config contains the shared auth token; keep it readable only by root.
+User=root
+
+[Install]
+WantedBy=multi-user.target
