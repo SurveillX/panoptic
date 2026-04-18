@@ -32,7 +32,7 @@ from shared.clients.vl_embedding import VLEmbeddingClient
 from shared.search.keyword_expansion import expand_query
 
 from .qdrant_filters import build_event_filter, build_image_filter, build_summary_filter
-from .rerank import rerank
+from .rerank import rerank, rerank_images
 from .schemas import (
     EventHit,
     ImageHit,
@@ -152,7 +152,7 @@ def execute_search(
         raw = _apply_image_time_filter(raw, time_range)
         raw = raw[: req.top_k]
         t = time.perf_counter()
-        raw = rerank(req.query, raw, text_field="caption_text")
+        raw = rerank_images(req.query, raw)
         rerank_ms += int((time.perf_counter() - t) * 1000)
         t = time.perf_counter()
         hydrated = _hydrate_images(engine, [p["payload"]["image_id"] for p in raw if p.get("payload")])
@@ -172,7 +172,7 @@ def execute_search(
             raw = _apply_image_time_filter(raw, time_range)
             raw = raw[: req.top_k]
             t = time.perf_counter()
-            raw = rerank(req.query, raw, text_field="caption_text")
+            raw = rerank_images(req.query, raw)
             rerank_ms += int((time.perf_counter() - t) * 1000)
             t = time.perf_counter()
             hydrated = _hydrate_images(engine, [p["payload"]["image_id"] for p in raw if p.get("payload")])
