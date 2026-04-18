@@ -49,6 +49,12 @@ MAX_DISK_USED_PCT = 80           # /data fill
 MAX_PG_CONNS_PCT = 80            # of configured max_connections
 MAX_REDIS_MEMORY_MB = 1024       # soft
 MAX_WORKER_HEALTH_AGE_SEC = 120  # /healthz staleness
+MAX_BACKUP_AGE_HOURS = 36        # silent-cron detector (nightly + 12h grace)
+
+BACKUP_DIRS = [
+    ("pg_dump",      "/data/panoptic-store/backups",          "panoptic-*.sql.gz"),
+    ("qdrant_snap",  "/data/panoptic-store/qdrant-snapshots", "**/*.snapshot"),
+]
 
 
 WORKER_PROBES = [
@@ -174,6 +180,28 @@ def main() -> int:
         except Exception as exc:
             summary[f"disk_{mount_label}_pct"] = "?"
 
+    # ---------------- Backup freshness ----------------
+    import glob
+    for label, dirpath, pattern in BACKUP_DIRS:
+        if not os.path.isdir(dirpath):
+            summary[f"{label}_age_h"] = "?"
+            alerts.append(f"{label} dir missing: {dirpath}")
+            continue
+        # glob is fine here; directories are small (≤ 2 weeks of files)
+        matches = glob.glob(os.path.join(dirpath, pattern), recursive=True)
+        if not matches:
+            summary[f"{label}_age_h"] = "?"
+            alerts.append(f"{label} has no backups in {dirpath}")
+            continue
+        newest_mtime = max(os.path.getmtime(p) for p in matches)
+        age_h = (time.time() - newest_mtime) / 3600.0
+        summary[f"{label}_age_h"] = round(age_h, 1)
+        if age_h > MAX_BACKUP_AGE_HOURS:
+            alerts.append(
+                f"{label} latest backup {age_h:.1f}h old > {MAX_BACKUP_AGE_HOURS}h "
+                "— cron may be broken"
+            )
+
     # ---------------- Append to log ----------------
     with LOG_FILE.open("a") as f:
         f.write(json.dumps({**summary, "alerts": alerts}) + "\n")
@@ -187,7 +215,9 @@ def main() -> int:
         f"jobs_nt={summary.get('non_terminal_jobs')}  "
         f"dlq={summary.get('dlq_depth')}  "
         f"redis={summary.get('redis_mem_mb')}MB  "
-        f"disk_data={summary.get('disk_data_pct')}%"
+        f"disk_data={summary.get('disk_data_pct')}%  "
+        f"pg_dump_age={summary.get('pg_dump_age_h')}h  "
+        f"qdrant_snap_age={summary.get('qdrant_snap_age_h')}h"
     )
 
     if alerts:

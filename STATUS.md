@@ -1,4 +1,4 @@
-# Panoptic — System Status (2026-04-18, end of day)
+# Panoptic — System Status (2026-04-18, end of day, refresh #2)
 
 Briefing document for external AI collaborators and future-self sessions.
 Self-contained.
@@ -98,14 +98,14 @@ Logs tee'd to `~/panoptic/logs/*.log`, rotated daily × 14 copies.
 
 | Table / Collection | Approx count | Notes |
 |---|---|---|
-| `panoptic_buckets` | ~48 | 25 from real trailer (`1422725077375`) + synthetic/test |
-| `panoptic_images` | ~63 | 7 from real trailer, rest synthetic |
-| `panoptic_summaries` | ~48 | 2 real (1 `full` mode), rest synthetic |
-| `panoptic_jobs` | ~387 | all terminal (succeeded / failed_terminal / degraded) |
+| `panoptic_buckets` | ~220 | mostly real trailer `1422725077375` (running ~15h) |
+| `panoptic_images` | ~141 | mostly real trailer, rest synthetic |
+| `panoptic_summaries` | ~233 | real trailer rollups + period summaries |
+| `panoptic_jobs` | ~885 | all terminal (succeeded / failed_terminal / degraded) |
 | `panoptic_trailers` | 6 active | registry (real trailer + 4 synthetic + SMOKE-TEST) |
-| `image_caption_vectors` (Qdrant, 4096-dim cosine) | 63 pts | caption-text embeddings |
-| `panoptic_image_vectors` (Qdrant, 4096-dim cosine) | **63 pts** | **VL-native image embeddings (M5)** |
-| `panoptic_summaries` (Qdrant, 4096-dim cosine) | ~48 pts | summary-text embeddings |
+| `image_caption_vectors` (Qdrant, 4096-dim cosine) | 141 pts | caption-text embeddings |
+| `panoptic_image_vectors` (Qdrant, 4096-dim cosine) | 141 pts | VL-native image embeddings (M5) |
+| `panoptic_summaries` (Qdrant, 4096-dim cosine) | 233 pts | summary-text embeddings |
 
 Alembic at migration **007**.
 
@@ -118,9 +118,9 @@ Alembic at migration **007**.
 | M1 | Search API live + ingest→query proof + relevance harness + idempotency sanity + `docs/M1_RESULTS.md` | ✅ done |
 | M2 | Webhook auth + minimum observability | ✅ done (HMAC middleware, panoptic_trailers, /healthz, dashboard, reclaimer, frpc) |
 | M3 | Onboard one real trailer | ✅ effectively done — `1422725077375` pushing unattended for ~7 hours; 25 buckets, 7 images, 2 summaries, 0 failed jobs |
-| M5 | VL image retrieval | ✅ done through Search API hybrid integration |
-| M4 | Full idempotency + crash-recovery validation | 🟡 in progress — DLQ tooling + 4/6 dep-outage tests complete; found + fixed a real bug (Redis → worker death); see §6 |
-| M6 | Move panoptic-store to dedicated machine | pending |
+| M5 | VL image retrieval (+ opt-in VL final rerank) | ✅ done |
+| M4 | Full idempotency + crash-recovery validation | ✅ done — 6/6 dep-outage tests, worker-restart-storm + duplicate-flood both verified |
+| M6 | Move panoptic-store to dedicated machine | pending (blocked on hardware) |
 | M7 | Containerize workers | pending |
 
 ---
@@ -178,17 +178,60 @@ Trailer payloads hit 3 validation cascades we patched mid-flight:
 
 All documented in trailer handoff doc at `~/Downloads/PANOPTIC_TRAILER_STATUS_UPDATE.md`.
 
+### 6.6 M4 crash-recovery — remaining tests complete
+
+- **Worker-restart-storm** (kill all 6 workers mid-flight, respawn):
+  clean drain, zero duplicates. See `docs/FAILURE_MODES.md` §11.
+- **Duplicate flood** (100 concurrent identical signed pushes): 1
+  accepted, 99 duplicate-409, 0 errors, no races on bucket or image
+  dedup paths. See §12.
+
+### 6.7 Operational hardening (retention, backup, freshness)
+
+- **Qdrant nofile bumped** to 65536 after real-traffic FD climb hit
+  the 1024 default. Capacity math through 500 trailers captured in
+  `docs/SCALING.md`.
+- **Postgres `max_connections=500`** (up from 100) — new probe
+  traffic + several crons made 100 too tight.
+- **Health probe connection leaks fixed** — both the Postgres probe
+  and the Redis consumer-stats probe were creating fresh clients per
+  tick. Reviewable in commits `0a50c59` and `5e58192`.
+- **Retention** — `scripts/prune_images.py` (7d baseline / 180d alert
+  / 365d anomaly) and `scripts/prune_jobs.py` (30d terminal) with
+  nightly cron. Policy in `docs/RETENTION.md`.
+- **Backup** — `~/panoptic-store/backup/pg_dump.sh` (14 dumps kept)
+  and `qdrant_snapshot.sh` (7 snapshots/collection, pruned via Qdrant
+  API). Both nightly from user cron. Qdrant snapshot volume mount
+  fixed — was previously writing into the container's ephemeral
+  layer, would have vanished on recreate.
+- **Restore drill rehearsed** — full pg_dump restore into temp DB
+  (141/233/885 rows exact match) and Qdrant snapshot recover into
+  temp collection (233 points) both proven. Procedure in
+  `docs/RESTORE.md`.
+- **Backup freshness** in `health_watch.py` — alerts if either backup
+  type is more than 36h old (silent-cron detector).
+
+### 6.8 M5 polish — opt-in VL rerank
+
+`SEARCH_RERANK_MODE=vl` makes the final-pass image rerank score
+`(query, actual pixels)` via Qwen3-VL-Reranker-2B instead of scoring
+caption text. Caps at 8 items/call (retrieval-service limit); larger
+hit sets use VL on the top-8 and preserve original order for the
+tail. Default stays `text` — flip when real surveillance imagery
+dominates the workload.
+
 ---
 
 ## 7. Known Gaps (Current)
 
 | Gap | Severity | Notes |
 |---|---|---|
-| Worker-restart-storm test not yet run | medium | Similar shape to the dep-outage tests. Next M4 item. |
+| Off-box backup target not wired | medium | Backups live on the same disk as primary data. Needs SSH setup from Bryan to the DO gateway (or to a second box post-M6). See `docs/RESTORE.md` §Off-box backup. |
+| No active paging on health_watch alerts | medium | Alerts go to stdout → cron `logs/cron.log`. No push (email/slack/pagerduty). Will mail via MAILTO env if user configures it. |
 | Postgres/Qdrant "slow but up" not characterized | low | Would look like a hang to the reclaimer; LEASE_TTL=120s eventually recovers but surfacing is poor. |
-| Alerting — dashboard is pull-only today | medium | No cron, no push. Acceptable at current scale; M6/M7 territory. |
 | Multi-Spark DB + image storage | deferred to M6 | Image files at `/data/panoptic-store/` are local-FS. NFS mount = zero code change. |
-| Synthetic harness regressed 2 queries with hybrid retrieval | low | VL amplifies real over synthetic — on real data it's an improvement. Worth re-scoring the harness once we have more real data. |
+| Synthetic harness regressed 2 queries with hybrid retrieval | low | VL amplifies real over synthetic. Not worth tuning — real data is what matters. Worth re-scoring once we hand-label a batch of real-trailer images. |
+| VL vs text rerank on real data not A/B'd | low | We've built VL rerank but haven't proven it wins over text on real surveillance imagery. Needs hand-labeled ground truth. |
 
 ---
 
@@ -229,6 +272,23 @@ cd ~/panoptic
 .venv/bin/python scripts/dlq_inspect.py                         # what's in DLQ
 .venv/bin/python scripts/dlq_replay.py --job-id <uuid> --ack    # replay one
 .venv/bin/python scripts/dlq_replay.py --job-type image_embed --all --ack  # drain a stream
+```
+
+### Retention + backup
+
+```bash
+# Dry-run (default) — prints what would be pruned
+.venv/bin/python scripts/prune_images.py
+.venv/bin/python scripts/prune_jobs.py
+# Apply
+.venv/bin/python scripts/prune_images.py --apply
+.venv/bin/python scripts/prune_jobs.py --apply
+
+# Manual backups (scheduled nightly from cron)
+cd ~/panoptic-store && bash backup/pg_dump.sh        # DB dump
+cd ~/panoptic-store && bash backup/qdrant_snapshot.sh # Qdrant snapshots
+
+# Restore drill — see docs/RESTORE.md for full procedure
 ```
 
 ### Re-embed images (after model swap)
@@ -276,21 +336,38 @@ fe3e9b5 chore: .gitignore + .env.example + stale vlm model refs
 
 ## 10. What the Next Session Should Pick Up
 
-**Immediate follow-ups on M4:**
-- Worker-restart-storm test (kill all 6 workers simultaneously, verify
-  clean drain on respawn).
-- Concurrent duplicate floods (100× same event_id → any races?).
-- Long-quiet-then-burst patterns against the bucket finalizer.
+M1–M5 are all done. The remaining roadmap items plus the known
+operational gaps:
 
-**M5 polish:**
-- VL rerank (`/rerank_visual`) — today we rerank everything with the
-  text reranker, which ignores visual signal. Add a second-pass VL
-  rerank for VL-branch hits.
+**Off-box backup (top of list):**
+- Set up SSH key from Spark → DO gateway droplet (user action).
+- Add nightly rsync of `/data/panoptic-store/backups/` (DB dumps, ~200KB
+  each, trivial over WAN).
+- Qdrant snapshots: defer WAN shipment until they're small enough to
+  justify it, or wait for the post-M6 second box with LAN access.
 
-**M6 prep:**
+**M6 prep (blocked on hardware inventory):**
 - Inventory the pre-Spark Ubuntu box Bryan mentioned — check specs
-  against §6 sizing table in the earlier store-migration design.
-- Decide Tailscale MagicDNS vs DHCP + router DNS.
+  against the sizing table in the store-migration design.
+- Decide Tailscale MagicDNS vs DHCP + router DNS for service discovery.
+- Rehearse backup/restore on the target host before migrating live data.
 
-**M7:**
-- Wait until M4 is fully done.
+**M7 — containerize workers:**
+- `Dockerfile` at `~/panoptic/` root (base image, venv, deps).
+- `docker-compose.yml` with one service per worker + `webhook` +
+  `search_api` + `reclaimer`.
+- Decision: bind-mount source vs bake. (Bind-mount for iteration speed
+  during dev; bake for reproducibility in prod.)
+- Keep `scripts/tmux-dev.sh` as a dev-only option.
+
+**Optional — VL rerank A/B:**
+- Hand-label ~20 real-trailer queries with ground-truth relevant images.
+- Run both `SEARCH_RERANK_MODE=text` and `=vl` against that set.
+- If VL wins materially, flip the default. If it's a wash on our
+  specific imagery, save the compute.
+
+**Operational follow-ups (not blockers):**
+- Wire a push target for health_watch alerts (email via MAILTO is
+  a 1-line change; slack/pagerduty is incremental).
+- Quarterly restore drill rehearsal — put on the calendar so the
+  backups stay trust-worthy.
