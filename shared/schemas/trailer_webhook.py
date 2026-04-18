@@ -19,7 +19,9 @@ class TrailerBucketData(BaseModel):
 
     bucket_start: datetime
     bucket_end: datetime
-    bucket_minutes: int
+    # Bucket window length in minutes. Defaults to 15 — the trailer
+    # aggregator's standard cadence — when omitted by the client.
+    bucket_minutes: int = 15
     camera_id: str
     object_type: str
     unique_tracker_ids: int
@@ -42,7 +44,9 @@ class TrailerBucketData(BaseModel):
     active_seconds: float
     duty_cycle: float
     anomaly_score: float | None = None
-    anomaly_flag: int
+    # Defaults to 0 when the trailer's anomaly scorer isn't running. Pairs
+    # with the nullable anomaly_score above — both absent => not-a-spike.
+    anomaly_flag: int = 0
 
 
 class TrailerBucketPayload(BaseModel):

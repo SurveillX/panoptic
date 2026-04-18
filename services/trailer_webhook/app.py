@@ -150,7 +150,15 @@ def create_app(
         try:
             payload = TrailerBucketPayload.model_validate(body)
         except ValidationError as exc:
-            log.warning("webhook: validation error: %s", exc.error_count())
+            # Log field-by-field so we can see which keys are failing in prod.
+            field_errs = [
+                {"loc": ".".join(str(p) for p in e.get("loc", ())),
+                 "type": e.get("type"), "msg": e.get("msg"),
+                 "input_repr": repr(e.get("input"))[:60]}
+                for e in exc.errors()
+            ]
+            log.warning("webhook: bucket validation error n=%d fields=%s",
+                        exc.error_count(), field_errs)
             return JSONResponse(
                 status_code=400,
                 content={"error": "validation failed", "detail": str(exc)[:500]},
