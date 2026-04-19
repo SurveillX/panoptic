@@ -96,6 +96,38 @@ class SearchAPIClient:
             {"serial_number": serial_number, "date": date},
         )
 
+
+class AgentClient:
+    """Thin httpx wrapper around the M11 panoptic_agent service."""
+
+    def __init__(self, base_url: str | None = None, timeout_sec: float | None = None) -> None:
+        import os
+        self._base = (
+            base_url
+            or os.environ.get("AGENT_URL", "http://localhost:8500")
+        ).rstrip("/")
+        self._client = httpx.Client(
+            base_url=self._base,
+            timeout=float(timeout_sec or os.environ.get("OPERATOR_UI_AGENT_TIMEOUT_SEC", "180")),
+            follow_redirects=False,
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+    def ask(self, *, question: str, scope: dict | None) -> dict:
+        body: dict = {"question": question}
+        if scope:
+            body["scope"] = scope
+        r = self._client.post("/v1/agent/ask", json=body)
+        r.raise_for_status()
+        return r.json()
+
+    def healthz(self) -> dict:
+        r = self._client.get("/healthz")
+        r.raise_for_status()
+        return r.json()
+
     def search(
         self,
         *,

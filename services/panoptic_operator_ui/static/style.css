@@ -301,3 +301,95 @@ pre.json {
   margin-top: 0.6em;
 }
 .inline-form .btn { border: none; cursor: pointer; padding: 0.3em 0.9em; font-size: 0.9em; }
+
+/* ---------- M11 Ask panel ---------- */
+.ask-panel { background: #fdfbf4; }  /* subtle warm tint to distinguish from data panels */
+
+.ask-form { display: flex; gap: 0.8em; align-items: flex-end; margin-top: 0.5em; }
+.ask-form label { flex: 1; display: flex; flex-direction: column; gap: 0.3em; }
+.ask-form textarea {
+  width: 100%;
+  padding: 0.5em 0.6em;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-family: inherit;
+  font-size: 1em;
+  resize: vertical;
+  min-height: 2.4em;
+}
+.ask-form .btn {
+  border: none;
+  cursor: pointer;
+  padding: 0.5em 1.2em;
+  font-size: 0.95em;
+  height: 2.4em;
+}
+
+.ask-response {
+  margin-top: 1em;
+  padding: 0.9em 1em;
+  border-left: 3px solid var(--accent);
+  background: #ffffff;
+  border-radius: 2px;
+}
+.ask-response.ask-warning {
+  border-left-color: #d4760d;
+  background: #fff9ef;
+}
+.ask-warning-banner {
+  background: #fff1d8;
+  border: 1px solid #e8c684;
+  padding: 0.4em 0.7em;
+  border-radius: 2px;
+  margin: 0 0 0.6em 0;
+  font-size: 0.9em;
+}
+.ask-warning-banner.small { display: inline; padding: 0 0.4em; font-size: 0.8em; }
+
+.ask-narrative {
+  font-size: 1em;
+  line-height: 1.5;
+  margin: 0 0 0.6em 0;
+}
+.ask-bullets { margin: 0.2em 0 0.8em 1.1em; padding: 0; }
+.ask-bullets li { margin-bottom: 0.3em; line-height: 1.5; }
+.ask-next-artifact { margin-top: 0.8em; }
+
+/* Citation chips — shown inline in narrative + bullets. */
+.cite {
+  display: inline;
+  padding: 0.05em 0.35em;
+  border-radius: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82em;
+  text-decoration: none;
+  border: 1px solid var(--border);
+  background: var(--bg-alt);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.cite:hover { background: #eef4fb; color: var(--accent-hover); text-decoration: none; }
+.cite-event   { border-left: 2px solid var(--evt-anomaly); }
+.cite-image   { border-left: 2px solid var(--trg-alert); }
+.cite-summary { border-left: 2px solid var(--accent); }
+.cite-report  { border-left: 2px solid var(--evt-spike); }
+.cite-unknown {
+  border-left: 2px solid #d4760d;
+  background: #fff1d8;
+  color: #8a5a08;
+  cursor: help;
+}
+
+/* Trace <details> */
+.ask-trace { margin-top: 1em; padding: 0.4em 0.6em; background: var(--bg-alt); border-radius: 2px; }
+.ask-trace summary { cursor: pointer; font-size: 0.85em; color: var(--fg-muted); }
+.ask-trace summary:hover { color: var(--fg); }
+.ask-trace-list {
+  margin: 0.5em 0 0 1.2em;
+  padding: 0;
+  font-size: 0.85em;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+.ask-trace-list li { margin-bottom: 0.25em; }
+.ask-unverified-count { color: #8a5a08; font-weight: 600; }

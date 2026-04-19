@@ -34,6 +34,94 @@
   </ul>
 </section>
 
+{# ------------------------------------------------------------------- #}
+{# "Ask about this day" — M11 single-shot agent panel                  #}
+{# ------------------------------------------------------------------- #}
+<section class="panel ask-panel">
+  <h2>Ask about this day</h2>
+  <form action="/trailer/{{ day_data.serial_number }}/{{ day_data.date }}/ask" method="post" class="ask-form">
+    <label>
+      <span class="muted small">Question (scoped to this trailer + date)</span>
+      <textarea name="question" rows="2" required
+                placeholder="e.g. What is the most important thing that happened here today?"
+                >{{ ask_question or "" }}</textarea>
+    </label>
+    <button type="submit" class="btn">Ask</button>
+  </form>
+
+  {% if ask_error %}
+    <div class="ask-response ask-warning">
+      <p class="ask-header">Error</p>
+      <p>{{ ask_error }}</p>
+    </div>
+  {% elif ask_response %}
+    {% set ans   = ask_response.answer or {} %}
+    {% set trace = ask_response.trace or {} %}
+    {% set unv   = trace.unverified_citations or [] %}
+    {% set cited_by_id = {} %}
+    {% for c in (ask_response.citations or []) %}
+      {% set _ = cited_by_id.update({c.id: c.type}) %}
+    {% endfor %}
+
+    <div class="ask-response {% if unv %}ask-warning{% endif %}">
+      {% if unv %}
+        <p class="ask-warning-banner">
+          <strong>Warning:</strong> {{ unv|length }}
+          {% if unv|length == 1 %}citation could{% else %}citations could{% endif %}
+          not be verified against the evidence in this turn. Treat the wording
+          below with caution; unresolved markers are shown in the narrative.
+        </p>
+      {% endif %}
+
+      {% if ans.narrative %}
+        <p class="ask-narrative">{{ render_citations(ans.narrative, cited_by_id) }}</p>
+      {% endif %}
+
+      {% if ans.evidence_bullets %}
+        <ul class="ask-bullets">
+          {% for b in ans.evidence_bullets %}
+            <li>{{ render_citations(b, cited_by_id) }}</li>
+          {% endfor %}
+        </ul>
+      {% endif %}
+
+      {% if ans.next_artifact and ans.next_artifact.url %}
+        <p class="ask-next-artifact">
+          <a class="btn" href="{{ ans.next_artifact.url }}">
+            {{ ans.next_artifact.label or "Open" }}
+          </a>
+        </p>
+      {% endif %}
+
+      <details class="ask-trace">
+        <summary>Trace — {{ trace.backend or "?" }}/{{ trace.model or "?" }} ·
+          {{ trace.iterations or 0 }} iter ·
+          {{ trace.tool_call_count or 0 }} tool call{{ "" if (trace.tool_call_count == 1) else "s" }} ·
+          {{ trace.total_latency_ms or 0 }}ms ·
+          tokens {{ trace.total_prompt_tokens or 0 }}/{{ trace.total_completion_tokens or 0 }}
+          {% if unv %}· <span class="ask-unverified-count">{{ unv|length }} unverified</span>{% endif %}
+        </summary>
+        <ol class="ask-trace-list">
+          {% for tc in (trace.tool_calls or []) %}
+            <li>
+              <code>{{ tc.name }}</code>
+              <span class="muted small">({{ tc.latency_ms }}ms)</span>
+              {% if tc.error %}
+                — <span class="ask-warning-banner small">error: {{ tc.error }}</span>
+              {% elif tc.output_digest %}
+                — <code class="small">{{ tc.output_digest[:120] }}{% if tc.output_digest|length > 120 %}…{% endif %}</code>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+        {% if unv %}
+          <p class="muted small">Unresolved markers: {% for u in unv %}<code class="small">{{ u }}</code>{% if not loop.last %}, {% endif %}{% endfor %}</p>
+        {% endif %}
+      </details>
+    </div>
+  {% endif %}
+</section>
+
 <section class="panel">
   <h2>Daily report</h2>
   {% if day_data.latest_daily_report_id %}

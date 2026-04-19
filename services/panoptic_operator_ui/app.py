@@ -15,13 +15,17 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import html
+import re
+
 import httpx
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup
 
-from .client import SEARCH_API_URL, SearchAPIClient
+from .client import SEARCH_API_URL, AgentClient, SearchAPIClient
 
 log = logging.getLogger(__name__)
 
@@ -30,20 +34,77 @@ _TEMPLATES_DIR = _HERE / "templates"
 _STATIC_DIR = _HERE / "static"
 
 
+_CITATION_MARKER_RE = re.compile(r"\[([0-9a-fA-F]{6,70})\]")
+
+_TYPE_TO_URL_PREFIX = {
+    "event":   "/events/",
+    "image":   "/images/",
+    "summary": "/summaries/",
+    "report":  "/reports/",  # report URLs look like /reports/<id>/view
+}
+
+
+def _render_citations(text: str, cited_by_id: dict[str, str]) -> Markup:
+    """Replace [<full-hex>] markers with clickable anchor tags to the
+    right detail page. Unknown or unverified markers render as a
+    `.cite-unknown` span so they're visible but don't have a live link.
+
+    Called from templates as `render_citations(text, cited_by_id)`.
+    `cited_by_id` is a dict[full_hex_id, type] built from the agent's
+    `citations` list. Everything else (including the non-marker prose)
+    is HTML-escaped for safety.
+    """
+    if not text:
+        return Markup("")
+
+    out_parts: list[str] = []
+    last = 0
+    for m in _CITATION_MARKER_RE.finditer(text):
+        out_parts.append(html.escape(text[last : m.start()]))
+        raw_id = m.group(1).lower()
+        ctype = cited_by_id.get(raw_id)
+        short = raw_id[:12]
+        if ctype and ctype in _TYPE_TO_URL_PREFIX:
+            prefix = _TYPE_TO_URL_PREFIX[ctype]
+            url = (
+                f"{prefix}{raw_id}/view"
+                if ctype == "report"
+                else f"{prefix}{raw_id}"
+            )
+            out_parts.append(
+                f'<a class="cite cite-{html.escape(ctype)}" '
+                f'href="{html.escape(url)}" '
+                f'title="{html.escape(ctype)} {html.escape(raw_id)}">'
+                f'[{html.escape(short)}…]</a>'
+            )
+        else:
+            out_parts.append(
+                f'<span class="cite cite-unknown" '
+                f'title="unresolved: {html.escape(raw_id)}">'
+                f'[{html.escape(short)}…]</span>'
+            )
+        last = m.end()
+    out_parts.append(html.escape(text[last:]))
+    return Markup("".join(out_parts))
+
+
 def _build_jinja_env() -> Environment:
-    return Environment(
+    env = Environment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),
         autoescape=select_autoescape(["html", "j2"]),
         trim_blocks=True,
         lstrip_blocks=True,
         keep_trailing_newline=True,
     )
+    env.globals["render_citations"] = _render_citations
+    return env
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Panoptic Operator UI", version="1.0")
     env = _build_jinja_env()
     client = SearchAPIClient()
+    agent_client = AgentClient()
 
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
@@ -111,9 +172,17 @@ def create_app() -> FastAPI:
     # Trailer day — the M10 first vertical slice
     # ------------------------------------------------------------------
 
-    @app.get("/trailer/{serial_number}/{day}", response_class=HTMLResponse)
-    def trailer_day(serial_number: str, day: str):
-        # Fetch the trailer-day rollup.
+    def _render_trailer_day(
+        serial_number: str,
+        day: str,
+        *,
+        ask_question: str | None = None,
+        ask_response: dict | None = None,
+        ask_error: str | None = None,
+    ) -> HTMLResponse:
+        """Shared renderer for the trailer-day page. Handles both the
+        plain GET path and the POST-ask path (which re-renders with an
+        agent response block populated)."""
         try:
             day_data = client.trailer_day(serial_number, day)
         except httpx.HTTPStatusError as exc:
@@ -138,7 +207,7 @@ def create_app() -> FastAPI:
                 status_code=503,
             )
 
-        # Fetch report history for this trailer (latest 5 daily + 2 weekly).
+        # Fetch report history (latest 5 daily + 2 weekly). Degrades.
         report_history: dict[str, list] = {"daily": [], "weekly": []}
         try:
             daily_list = client.reports_list(
@@ -151,10 +220,8 @@ def create_app() -> FastAPI:
             report_history["weekly"] = weekly_list.get("reports", [])
         except Exception as exc:
             log.warning("trailer_day: report-history fetch failed: %s", exc)
-            # Degrade gracefully — keep empty lists so the template
-            # renders a clean empty state.
 
-        # Compute prev/next day links (simple date math, stays in UTC).
+        # Compute prev/next day links.
         from datetime import date, timedelta
         try:
             d = date.fromisoformat(day)
@@ -171,6 +238,62 @@ def create_app() -> FastAPI:
             search_api_url=SEARCH_API_URL,
             prev_day=prev_day,
             next_day=next_day,
+            ask_question=ask_question,
+            ask_response=ask_response,
+            ask_error=ask_error,
+        )
+
+    @app.get("/trailer/{serial_number}/{day}", response_class=HTMLResponse)
+    def trailer_day(serial_number: str, day: str):
+        return _render_trailer_day(serial_number, day)
+
+    # ------------------------------------------------------------------
+    # POST /trailer/{serial}/{day}/ask — call /v1/agent/ask scoped to
+    # this trailer-day, re-render the trailer-day page with the response
+    # baked in. Single-shot UX; no session state; URL stays stable so
+    # browser-back works.
+    # ------------------------------------------------------------------
+
+    @app.post("/trailer/{serial_number}/{day}/ask", response_class=HTMLResponse)
+    def trailer_day_ask(
+        serial_number: str,
+        day: str,
+        question: str = Form(...),
+    ):
+        q = (question or "").strip()
+        if not q:
+            return _render_trailer_day(
+                serial_number, day,
+                ask_question="",
+                ask_error="Please enter a question.",
+            )
+
+        try:
+            resp = agent_client.ask(
+                question=q,
+                scope={"serial_number": serial_number, "date": day},
+            )
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            detail = exc.response.text[:300] if exc.response is not None else ""
+            log.warning("agent_ask upstream %s: %s", status, detail)
+            return _render_trailer_day(
+                serial_number, day,
+                ask_question=q,
+                ask_error=f"Agent returned {status}: {detail}",
+            )
+        except httpx.HTTPError as exc:
+            log.exception("agent_ask network error")
+            return _render_trailer_day(
+                serial_number, day,
+                ask_question=q,
+                ask_error=f"Could not reach agent service: {exc!s}",
+            )
+
+        return _render_trailer_day(
+            serial_number, day,
+            ask_question=q,
+            ask_response=resp,
         )
 
     # ------------------------------------------------------------------
