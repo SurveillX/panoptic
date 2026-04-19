@@ -1,0 +1,120 @@
+# Seed questions for the M11 agent service — baseline regression set.
+#
+# The runner (tests/agent/runner.py) POSTs each question to the live
+# /v1/agent/ask endpoint and scores the response against the assertions
+# below. Scored per-question:
+#   expected_tools       — at least one of these tool names must appear in trace.tool_calls
+#   min_citations        — citations[] must have at least this many entries (after resolution)
+#   max_unverified       — trace.unverified_citations length must be <= this
+#   max_iterations       — trace.iterations must be <= this
+#   max_latency_ms       — trace.total_latency_ms must be <= this
+#   hedge_required       — if true, the narrative must contain hedge-y language
+#                          ("no evidence", "strongest evidence suggests", "appears to",
+#                           "no direct evidence", etc.) — enforces evidence discipline
+#                          on questions where the honest answer is "I don't know"
+#   disallow_next_artifact — if true, next_artifact must be null (for questions
+#                            that shouldn't nudge the user to generate a report)
+#
+# Data universe:
+#   - YARD-A-001 2026-04-18: dense synthetic day — 10 events, 5 images, 5 summaries, 5 cameras
+#   - 1422725077375 2026-04-18: real trailer — 31 events (all bucket_marker), baseline images only
+#
+# Tuning note: Gemma-26B has non-zero hallucination on long IDs; max_unverified
+# budgets reflect what's achievable today. When a hosted model swaps in, drop
+# max_unverified to 0 and tighten citation counts.
+
+questions:
+
+  # ---- Category 1: "what happened here today" ----
+  - name: yard_whats_important
+    question: "What is the most important thing that happened on this trailer that day? Be concise."
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [get_trailer_day]
+    min_citations: 2
+    max_unverified: 1
+    max_iterations: 4
+    max_latency_ms: 30000
+
+  - name: real_trailer_whats_important
+    question: "What happened on this trailer yesterday? Give one or two sentences."
+    scope: {serial_number: "1422725077375", date: "2026-04-18"}
+    expected_tools: [get_trailer_day]
+    min_citations: 1
+    max_unverified: 2
+    max_iterations: 4
+    max_latency_ms: 45000
+
+  # ---- Category 2: "show me the evidence" ----
+  - name: yard_evidence_for_anomalies
+    question: "Show me the strongest evidence of anomalies for this trailer-day."
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [get_trailer_day, search]
+    min_citations: 2
+    max_unverified: 1
+    max_iterations: 5
+    max_latency_ms: 40000
+
+  # ---- Category 3: report generation (report-intent classifier must fire) ----
+  - name: yard_generate_daily_report
+    question: "Generate today's daily report for this trailer."
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [generate_daily_report]
+    min_citations: 1          # the report_id itself counts
+    max_unverified: 0
+    max_iterations: 4
+    max_latency_ms: 40000
+
+  # ---- Category 4: filtered retrieval ----
+  - name: yard_after_hours_activity
+    question: "Find after-hours activity on this trailer on this day."
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [get_trailer_day, search]
+    min_citations: 1
+    max_unverified: 2
+    max_iterations: 5
+    max_latency_ms: 40000
+
+  # ---- Category 5: verification ----
+  - name: yard_verify_red_car
+    question: "Verify whether a red car appeared on this trailer today."
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [verify, search, get_trailer_day]
+    min_citations: 1
+    max_unverified: 2
+    max_iterations: 6
+    max_latency_ms: 60000
+
+  # ---- Category 6: period summary ----
+  - name: yard_summarize_24h
+    question: "Summarize the most important activity across the past 24 hours on this trailer."
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [get_trailer_day, summarize_period]
+    min_citations: 1
+    max_unverified: 2
+    max_iterations: 5
+    max_latency_ms: 50000
+
+  # ---- Category 7: evidence discipline — "no evidence" probe ----
+  # The data has NO evidence for "flooding" anywhere. Honest answer must
+  # include hedging / "no evidence found" language. This test enforces
+  # the conservative-wording system-prompt rule.
+  - name: yard_no_evidence_flood
+    question: "Is there any evidence of flooding or water damage on this trailer today?"
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [get_trailer_day, search]
+    min_citations: 0
+    max_unverified: 0
+    max_iterations: 6
+    max_latency_ms: 40000
+    hedge_required: true
+    disallow_next_artifact: true
+
+  # ---- Category 7b: evidence discipline — strongest-supporting variant ----
+  - name: yard_strongest_evidence_spikes
+    question: "What is the strongest evidence of activity spikes on this trailer today?"
+    scope: {serial_number: YARD-A-001, date: "2026-04-18"}
+    expected_tools: [get_trailer_day, search]
+    min_citations: 1
+    max_unverified: 1
+    max_iterations: 5
+    max_latency_ms: 40000

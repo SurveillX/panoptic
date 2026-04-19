@@ -70,7 +70,7 @@ Image files: `/data/panoptic-store/images/<serial>/<camera>/<yyyy>/<mm>/<dd>/<im
 | `panoptic-qdrant` | 6333 / 6334 | Qdrant v1.13.6 |
 | `panoptic-redis` | 6379 | Redis 7 |
 
-### 4.2 Application processes (tmux session `panoptic`, **12 windows**)
+### 4.2 Application processes (tmux session `panoptic`, **13 windows**)
 
 | Window | Port | Role |
 |---|---|---|
@@ -86,6 +86,7 @@ Image files: `/data/panoptic-store/images/<serial>/<camera>/<yyyy>/<mm>/<dd>/<im
 | `reclaimer` | 8210 | Lease expiry recovery + stream re-enqueue (30 s tick) |
 | `search` | 8600 | Search API (hybrid retrieval + M9 reports + M10 trailer-day/fleet/detail endpoints) |
 | `operator_ui` | 8400 | **Operator evidence browser — HTML surface over Search API (M10)** |
+| `agent` | 8500 | **Task-oriented agent over vLLM + Search API tools (M11)** |
 
 Start/observe: `cd ~/panoptic && ./scripts/tmux-dev.sh` then
 `tmux a -t panoptic`.
@@ -133,6 +134,7 @@ Alembic at migration **010**.
 | M8 | Unified event layer (panoptic_events + producer worker) | ✅ done — 58/58 image triggers + 105/105 bucket markers converted; Search API + period summary both cite real event_ids; backfill is zero-insert on rerun |
 | M9 | Async report generation (daily + weekly HTML) | ✅ done — `POST /v1/reports/{daily,weekly}` enqueue via new `panoptic_report_generator` worker; content-addressed report_ids; authorized asset endpoint; weekly aggregation SQL tables + per-day narrative roll-up; 90-day on-disk retention; cron entries documented in `docs/REPORTS.md` |
 | M10 | Operator evidence browser UI | ✅ done — new `panoptic_operator_ui` service (12th, `:8400`) over 9 new read-only Search API endpoints; HTMX + Jinja2; pages: fleet, trailer-day, search (URL-driven), report viewer (iframe), event/summary/image detail; explicit empty states; "Generate daily report" button wires through to the M9 worker; access model documented in `docs/OPERATOR_UI.md` |
+| M11 | Task-oriented agent layer | ✅ done — new `panoptic_agent` service (13th, `:8500`) runs a prompt-driven tool-use loop over the local vLLM (Gemma-4-26B-it). 11 tools wrap existing Search API endpoints; grounded structured answers with evidence-first citations; `"Ask about this day"` panel on the trailer-day page; seed-question harness baseline 7/9 PASS on local Gemma; hosted-model swap (Claude / GPT-4) is an `AGENT_BACKEND` env flip for M11.1. Access model + guardrails in `docs/AGENT.md` |
 
 ---
 
@@ -394,6 +396,81 @@ Switched to `Query(alias="type")` binding to `rt` — URL stays
 email/Slack, cross-trailer charts, mobile layout, branded styling.
 These are M11+ concerns.
 
+### 6.12 M11 — task-oriented agent layer
+
+New `panoptic_agent` service (13th, health + HTTP on `:8500`). Runs a
+prompt-driven tool-use loop against the local vLLM (Gemma-4-26B-it)
+and answers natural-language questions with evidence-first, structured
+JSON responses. Not a chatbot — single-turn.
+
+**Architecture:** operator_ui (M10) → agent (M11) → search_api (M10) →
+Postgres/Qdrant. The agent never touches the DB; every read goes
+through Search API endpoints. M10 is the first UI consumer; the
+endpoint is callable by any client (CLI, Slack bot, automation).
+
+**Stack:** FastAPI + `httpx` + vLLM's OpenAI-compatible endpoint.
+**No** Anthropic/OpenAI SDK in this service today; `AGENT_BACKEND` env
+switch reserves a path for a hosted-model swap (Claude / GPT-4) in
+M11.1 without touching tools, dispatch, or UI.
+
+**Tool surface (11 tools):** `search`, `verify`, `summarize_period`,
+`get_trailer_day`, `get_fleet_overview`, `get_event`, `get_summary`,
+`get_image`, `list_reports`, `get_report` (always available) +
+`generate_daily_report` (gated — only exposed when the question
+matches a report-intent regex; prevents "generate a report" as a
+lazy resolution for uncertainty).
+
+**Response contract:** `{answer: {narrative, evidence_bullets,
+next_artifact?}, citations: [{type, id, marker}], scope_used, trace}`.
+The `trace` has iterations, tool_call_count, per-tool latencies,
+token counts, unverified_citations, and stop_reason. Every inline
+`[<64-hex>]` marker in the narrative resolves to a clickable chip in
+the UI.
+
+**Guardrails:**
+- post-hoc citation verifier: scans the answer for hex markers,
+  resolves short prefixes to full 64-hex IDs via the trace, flags
+  anything ambiguous or hallucinated as `unverified_citations`
+- UI warning state: when `unverified_citations` is non-empty, the
+  "Ask" panel renders with an orange border + banner; unresolved
+  markers show as `.cite-unknown` spans (no link, amber background)
+- system prompt enforces: hedged wording when evidence is partial,
+  firm wording only when `verify` returned a supportive verdict,
+  prefer scoped tools first, minimize tool calls
+- dispatch layer re-checks `allow_write` even if the model invokes
+  the write tool out of context
+- max_iterations=8, max_tokens=1024, max_tool_output_chars=8000
+- rate limit: 30 asks/min (soft in-memory)
+- every `/v1/agent/ask` emits a structured JSONL audit record
+
+**UI integration (M10):** "Ask about this day" panel on the
+trailer-day page. Single-shot form; answer renders inline with
+clickable citations, optional next_artifact button, and collapsible
+trace `<details>`.
+
+**Seed-question harness** (`tests/agent/seed_questions.yaml` +
+`tests/agent/runner.py`): 9 questions across 7 categories (including
+evidence-discipline / "no-evidence" probes that require hedged
+language). Baseline **7 PASS · 2 FAIL** on local Gemma. Both failures
+are vLLM context-window pressure on large trailer-day rollups; the
+agent catches the 400 and emits a degraded JSON answer (no 503 to
+the caller). Hosted-model swap is expected to fix both.
+
+**Known limits:** see `docs/AGENT.md` §Known limitations. Core item:
+Gemma occasionally truncates long hex IDs; the verifier resolves
+tail-truncations but middle-truncations get flagged.
+
+### 6.13 Bugs caught during M11
+
+- **vLLM `response_format: json_object`** was initially passed to
+  `/v1/chat/completions`; isn't universally supported across model
+  backends and caused 400s on larger contexts. Dropped — the system
+  prompt already constrains JSON-only output, and the loop has a
+  parse-error nudge path for recovery.
+- **Context-length 400 from vLLM** was surfacing as a 503 to the
+  caller. Now caught inside the tool-use loop and returned as a
+  structured degraded answer with `stop_reason=vllm_error_<code>`.
+
 ---
 
 ## 7. Known Gaps (Current)
@@ -421,20 +498,20 @@ cd ~/panoptic-store && docker compose up -d
 # GPU services
 cd ~/panoptic-retrieval && docker compose up -d
 cd ~/panoptic-vllm && docker compose up -d
-# Application (12 containers — M7 base + M8 event_producer + M9 report_generator + M10 operator_ui)
+# Application (13 containers — M7 base + M8 event_producer + M9 report_generator + M10 operator_ui + M11 agent)
 cd ~/panoptic && docker compose up -d
 # Ingress tunnel
 sudo systemctl start frpc
 ```
 
 Dev-only alternative: `cd ~/panoptic && ./scripts/tmux-dev.sh` runs the
-12 workers directly in a tmux session using the host venv. Don't run
+13 workers directly in a tmux session using the host venv. Don't run
 both — they collide on ports.
 
 ### Status
 
 ```bash
-~/panoptic/scripts/dashboard.sh              # all 12 workers + containers + disk
+~/panoptic/scripts/dashboard.sh              # all 13 workers + containers + disk
 ~/panoptic/scripts/watch_trailer.sh <serial> # live per-trailer view
 ```
 
@@ -525,6 +602,25 @@ open http://localhost:8400/trailer/YARD-A-001/2026-04-18
 
 Fleet / search / detail pages documented in `docs/OPERATOR_UI.md`.
 
+### Agent (M11)
+
+```bash
+# Start the agent service
+docker compose up -d agent
+curl -sS http://localhost:8500/healthz | jq .
+
+# Single-shot /ask via curl
+curl -sS -X POST http://localhost:8500/v1/agent/ask \
+    -H 'Content-Type: application/json' \
+    -d '{"question":"What happened today?",
+         "scope":{"serial_number":"YARD-A-001","date":"2026-04-18"}}'
+
+# Baseline seed-question harness
+.venv/bin/python tests/agent/runner.py
+```
+
+Tools, guardrails, access model in `docs/AGENT.md`.
+
 ### Live smoke
 
 ```bash
@@ -574,8 +670,8 @@ fe3e9b5 chore: .gitignore + .env.example + stale vlm model refs
 
 ## 10. What the Next Session Should Pick Up
 
-M1–M5 + M7 + M8 + M9 + M10 are all done. The remaining roadmap items
-plus the known operational gaps:
+M1–M5 + M7 + M8 + M9 + M10 + M11 are all done. The remaining roadmap
+items plus the known operational gaps:
 
 **Off-box backup (top of list):**
 - Set up SSH key from Spark → DO gateway droplet (user action).
@@ -615,14 +711,20 @@ on-the-fly missing-day synthesis in weekly.
 
 **M10 — operator evidence browser (✅ done):**
 New `panoptic_operator_ui` service + 9 new Search API endpoints.
-See §6.11 and `docs/OPERATOR_UI.md`. Pick up next with: install the
-report-generation cron from M9 for real traffic; field-test with an
-actual operator to identify which UI gaps hurt most; then M11.
+See §6.11 and `docs/OPERATOR_UI.md`.
 
-**M11 — agent layer (next milestone):**
-Tool wrappers over the Search API endpoints the UI already uses.
-Should be relatively small — the endpoints are stable and
-agent-friendly. Kickoff plan needed before implementation.
+**M11 — agent layer (✅ done):**
+New `panoptic_agent` service over the local vLLM. Same tool surface a
+hosted-model agent would want. Seed baseline 7/9 on Gemma. See §6.12
+and `docs/AGENT.md`. Pick up next with M11.1 hosted-model swap
+(AGENT_BACKEND=claude) whenever real customer demo needs the quality
+step-up, or with M12 expanded bucket-marker derivation.
+
+**M12 — expanded bucket-marker derivation (next milestone):**
+Add derivation logic for `drop`, `start`, `late_start`,
+`underperforming` markers. Consumer branches already exist in the
+summary agent; today only `spike` + `after_hours` are produced. Kickoff
+plan needed before implementation.
 
 **Optional — VL rerank A/B:**
 - Hand-label ~20 real-trailer queries with ground-truth relevant images.

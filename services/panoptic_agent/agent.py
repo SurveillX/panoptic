@@ -53,7 +53,7 @@ AGENT_MAX_ITERATIONS: int = int(os.environ.get("AGENT_MAX_ITERATIONS", "8"))
 AGENT_MAX_TOKENS: int = int(os.environ.get("AGENT_MAX_TOKENS", "1024"))
 AGENT_TEMPERATURE: float = float(os.environ.get("AGENT_TEMPERATURE", "0.2"))
 AGENT_MAX_TOOL_OUTPUT_CHARS: int = int(
-    os.environ.get("AGENT_MAX_TOOL_OUTPUT_CHARS", "16000")
+    os.environ.get("AGENT_MAX_TOOL_OUTPUT_CHARS", "8000")
 )
 AGENT_LLM_TIMEOUT_SEC: float = float(os.environ.get("AGENT_LLM_TIMEOUT_SEC", "90"))
 
@@ -154,6 +154,19 @@ def run_agent(
         trace.llm_calls += 1
 
         llm_response = _call_vllm(http_client, messages, trace)
+        if llm_response is None:
+            # vLLM rejected the request (context length, bad input,
+            # model not loaded, etc.) — break out and emit a degraded
+            # answer. stop_reason is already set inside _call_vllm.
+            parsed_answer = _degraded_answer(
+                "vLLM request was rejected "
+                f"(stop_reason={trace.stop_reason}); "
+                "often caused by the trailer-day tool output exceeding "
+                "the model's context window. Try narrowing the scope "
+                "or asking a more specific question."
+            )
+            break
+
         content = (llm_response.get("choices") or [{}])[0].get("message", {}).get("content", "")
         trace.stop_reason = (llm_response.get("choices") or [{}])[0].get("finish_reason")
 
@@ -264,20 +277,40 @@ def _call_vllm(
     http_client: httpx.Client,
     messages: list[dict[str, str]],
     trace: AgentTrace,
-) -> dict:
+) -> dict | None:
     """POST /v1/chat/completions on the local vLLM. Returns the JSON
-    payload. Accumulates token usage into the trace."""
+    payload, or None on an unrecoverable vLLM error (context length,
+    bad request, etc.). The outer loop uses None to break out cleanly
+    with a degraded answer rather than raising a 503 to the caller.
+
+    We deliberately do NOT pass response_format={"type":"json_object"}:
+    it isn't universally supported across vLLM model backends, and the
+    system prompt already enforces JSON-only output with a parse-failure
+    retry/nudge path.
+    """
     url = f"{AGENT_VLLM_BASE_URL}/v1/chat/completions"
     body = {
         "model": AGENT_MODEL,
         "messages": messages,
         "max_tokens": AGENT_MAX_TOKENS,
         "temperature": AGENT_TEMPERATURE,
-        # Many vLLM-served models honor this — requests JSON-only output.
-        "response_format": {"type": "json_object"},
     }
-    resp = http_client.post(url, json=body, timeout=AGENT_LLM_TIMEOUT_SEC)
-    resp.raise_for_status()
+    try:
+        resp = http_client.post(url, json=body, timeout=AGENT_LLM_TIMEOUT_SEC)
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body_preview = (exc.response.text or "")[:400] if exc.response is not None else ""
+        log.warning(
+            "vLLM rejected request (%s): %s",
+            exc.response.status_code if exc.response is not None else "?",
+            body_preview,
+        )
+        # 4xx from vLLM means the request was malformed OR the context
+        # is too long. Either way, no point retrying at this layer.
+        # Convey the failure as None so the loop can emit a degraded
+        # answer rather than bubbling a 503 to the user.
+        trace.stop_reason = f"vllm_error_{exc.response.status_code if exc.response is not None else 'unknown'}"
+        return None
     payload = resp.json()
 
     usage = payload.get("usage") or {}
