@@ -110,6 +110,27 @@ generation, static-served cited images, 90-day on-disk retention.
 reports, verify-integration (`/v1/search/verify`), custom/branded
 styling, alternate output formats. Each is a potential M9.1+ or later.
 
+## Access model (v1)
+
+The report endpoints follow the same trust boundary as the rest of the
+Search API: anyone who can reach `localhost:8600` can read any report's
+status, metadata, and cited image assets. There is no per-user auth on
+any report endpoint.
+
+- **Status endpoint** (`GET /v1/reports/{report_id}`): exposes only
+  metadata (cited IDs, counts, narratives) that is already reachable via
+  `/v1/search` and `/v1/summarize/period`. No new data class.
+- **Asset endpoint** (`GET /v1/reports/{report_id}/assets/{image_id}.jpg`):
+  gated by `image_id ∈ metadata_json.cited_image_ids` for that report —
+  a **correctness** property (prevents the endpoint from becoming a
+  generic image proxy), not an authentication one.
+
+The Search API has no public ingress today. Only `panoptic.surveillx.ai
+→ :8100 (webhook)` is tunneled, and that path enforces HMAC auth. Do
+not add a public tunnel for `:8600` without first landing an auth
+layer (API keys or session cookies at the Caddy edge, or equivalent).
+Per-user ACLs and trailer-scoped authorization are M10 UI-era concerns.
+
 ## Known limitations
 
 - Weekly reports DO NOT on-the-fly synthesize a missing day from raw
