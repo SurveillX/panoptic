@@ -1,14 +1,15 @@
 name: panoptic
 
 # Containerized Panoptic app stack — webhook, 9 workers, reclaimer,
-# Search API, and the M10 operator UI. Each worker is a separate
-# service so restarts are surgical (tmux-dev.sh and this file are 1:1).
+# Search API, M10 operator UI, and M11 agent layer. Each worker is a
+# separate service so restarts are surgical (tmux-dev.sh and this file
+# are 1:1).
 #
 # Networking: host mode. The workers already talk to panoptic-store,
 # panoptic-vllm, and panoptic-retrieval over localhost. Host mode keeps
 # the existing .env URLs working unchanged. Each worker binds a unique
-# /healthz port (8201-8208, 8210, 8100, 8400, 8600) so there are no
-# collisions.
+# /healthz port (8201-8208, 8210, 8100, 8400, 8500, 8600) so there are
+# no collisions.
 #
 # Depends on: panoptic-store (postgres/qdrant/redis) + panoptic-vllm +
 # panoptic-retrieval all running on the host. Bring those up first.
@@ -162,6 +163,23 @@ services:
     command: python -m services.panoptic_reclaimer.worker
     healthcheck:
       test: ["CMD-SHELL", "curl -sSf http://localhost:8210/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  agent:
+    <<: *worker-base
+    container_name: panoptic-agent
+    command: python -m services.panoptic_agent.server
+    # M11 — task-oriented agent layer over the Search API. Requires
+    # ANTHROPIC_API_KEY in .env. Calls search_api over loopback HTTP;
+    # the only external egress is api.anthropic.com.
+    #
+    # SECURITY NOTE — :8500 is internal-only, same trust boundary as
+    # :8600 and :8400. No public tunnel without an auth layer first.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8500/healthz || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

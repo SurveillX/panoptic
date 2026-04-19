@@ -49,8 +49,9 @@ mkwindow report_gen      services.panoptic_report_generator.worker
 mkwindow reclaimer       services.panoptic_reclaimer.worker
 mkwindow search          services.search_api.server
 mkwindow operator_ui     services.panoptic_operator_ui.server
+mkwindow agent           services.panoptic_agent.server
 
 tmux select-window -t "$SESSION:webhook"
 
-echo "started panoptic tmux session with 12 windows."
+echo "started panoptic tmux session with 13 windows."
 echo "attach:  tmux a -t $SESSION"
