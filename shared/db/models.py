@@ -14,6 +14,7 @@ Tables:
   panoptic_images           — trailer-pushed images with caption enrichment
   panoptic_events           — unified event layer (image-trigger + bucket-marker)
   panoptic_camera_aliases   — inert canonical-camera mapping (D-2 Option B)
+  panoptic_reports          — M9 async-generated HTML reports (daily + weekly)
 """
 
 from __future__ import annotations
@@ -449,6 +450,47 @@ class PanopticCameraAlias(Base):
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         Text, nullable=False, server_default=text("now()")
+    )
+
+
+class PanopticReport(Base):
+    """
+    M9 report artifact row.
+
+    One row per (serial_number, kind, window_start_utc) tuple. report_id is
+    content-addressed as sha256(serial, kind, window_start, window_end);
+    regenerating against the same window updates the existing row in place.
+    template_version lives in metadata_json only — NOT in the identity hash.
+    """
+
+    __tablename__ = "panoptic_reports"
+
+    report_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    serial_number: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)  # 'daily' | 'weekly'
+
+    window_start_utc: Mapped[datetime] = mapped_column(Text, nullable=False)
+    window_end_utc: Mapped[datetime] = mapped_column(Text, nullable=False)
+
+    storage_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generated_at: Mapped[datetime | None] = mapped_column(Text, nullable=True)
+
+    metadata_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        Text, nullable=False, server_default=text("now()")
+    )
+
+    __table_args__ = (
+        Index("ix_panoptic_reports_sn_kind_window", "serial_number", "kind", "window_start_utc"),
+        Index("ix_panoptic_reports_status", "status", "updated_at"),
     )
 
 

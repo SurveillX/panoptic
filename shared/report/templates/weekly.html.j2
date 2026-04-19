@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Panoptic Weekly Report — {{ serial_number }} — {{ iso_week }}</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
+  h1 { font-size: 1.5em; border-bottom: 2px solid #333; padding-bottom: .3em; }
+  h2 { font-size: 1.2em; margin-top: 1.8em; border-bottom: 1px solid #ccc; padding-bottom: .2em; }
+  h3 { font-size: 1em; margin-top: 1em; }
+  .meta { color: #666; font-size: .85em; margin-bottom: 1em; }
+  .overall, .day { background: #f7f7f7; padding: 1em 1.2em; border-left: 3px solid #555;
+                   margin: 1em 0; border-radius: 2px; }
+  .day.missing { border-left-color: #bbb; background: #fafafa; color: #888; }
+  .day.low-confidence { border-left-color: #c88; }
+  .headline { font-weight: 600; font-size: 1.05em; margin: 0 0 .4em 0; }
+  .confidence { color: #666; font-size: .85em; }
+  table { border-collapse: collapse; width: 100%; margin: .8em 0; font-size: .9em; }
+  th, td { text-align: left; padding: .3em .6em; border-bottom: 1px solid #eee; }
+  th { background: #eee; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .empty { color: #888; font-style: italic; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; }
+  .footer { margin-top: 2em; padding-top: 1em; border-top: 1px solid #ccc; color: #888; font-size: .8em; }
+  code { background: #eee; padding: 0 .3em; border-radius: 2px; font-size: .85em; }
+</style>
+</head>
+<body>
+
+<h1>Weekly Report — {{ serial_number }} — {{ iso_week }}</h1>
+<div class="meta">
+  Window: <code>{{ window_start_utc }}</code> to <code>{{ window_end_utc }}</code> (UTC)<br>
+  Generated: <code>{{ generated_at_utc }}</code><br>
+  Report ID: <code>{{ report_id }}</code><br>
+  Daily reports available: {{ dailies_available }} of 7
+</div>
+
+<h2>Overall</h2>
+<div class="overall">
+  <p class="headline">{{ weekly_overall.headline }}</p>
+  <p>{{ weekly_overall.summary }}</p>
+  <p class="confidence">
+    Confidence: {{ "%.2f"|format(weekly_overall.confidence) }}
+    {% if weekly_overall.supporting_day_ids %}
+      · Days referenced: {{ weekly_overall.supporting_day_ids|join(", ") }}
+    {% endif %}
+  </p>
+</div>
+
+<div class="two-col">
+  <div>
+    <h2>Events by type</h2>
+    {% if aggregates.event_type_totals %}
+      <table>
+        <thead><tr><th>Type</th><th>Count</th></tr></thead>
+        <tbody>
+          {% for et, n in aggregates.event_type_totals.items() %}
+            <tr><td>{{ et }}</td><td class="num">{{ n }}</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot><tr><th>Total</th><th class="num">{{ aggregates.total_events }}</th></tr></tfoot>
+      </table>
+    {% else %}
+      <p class="empty">No events recorded this week.</p>
+    {% endif %}
+  </div>
+
+  <div>
+    <h2>Images by trigger</h2>
+    {% if aggregates.image_trigger_totals %}
+      <table>
+        <thead><tr><th>Trigger</th><th>Count</th></tr></thead>
+        <tbody>
+          {% for t, n in aggregates.image_trigger_totals.items() %}
+            <tr><td>{{ t }}</td><td class="num">{{ n }}</td></tr>
+          {% endfor %}
+        </tbody>
+        <tfoot><tr><th>Total</th><th class="num">{{ aggregates.total_images }}</th></tr></tfoot>
+      </table>
+    {% else %}
+      <p class="empty">No images captured this week.</p>
+    {% endif %}
+  </div>
+</div>
+
+<h2>Per-camera activity</h2>
+{% if aggregates.per_camera_rank %}
+  <table>
+    <thead>
+      <tr><th>Camera</th><th>Events</th><th>Images</th><th>Buckets</th><th>Hours with data</th></tr>
+    </thead>
+    <tbody>
+      {% for cam in aggregates.per_camera_rank %}
+        {% set hours = (cam.bucket_count / 4.0) | round(1) %}
+        <tr>
+          <td>{{ cam.camera_id }}</td>
+          <td class="num">{{ cam.event_count }}</td>
+          <td class="num">{{ cam.image_count }}</td>
+          <td class="num">{{ cam.bucket_count }}</td>
+          <td class="num">{{ hours }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="empty">No per-camera activity recorded this week.</p>
+{% endif %}
+
+<h2>Per-day</h2>
+{% for day in per_day %}
+  <div class="day {% if day.missing %}missing{% elif day.confidence < 0.5 %}low-confidence{% endif %}">
+    <h3>{{ day.day_key }}</h3>
+    {% if day.missing %}
+      <p class="empty">No daily report was produced for this date.</p>
+    {% else %}
+      <p class="headline">{{ day.headline }}</p>
+      <p>{{ day.summary }}</p>
+      <p class="confidence">
+        Confidence: {{ "%.2f"|format(day.confidence) }}
+        {% if day.daily_report_id %}
+          · Report: <code>{{ day.daily_report_id[:16] }}…</code>
+        {% endif %}
+      </p>
+    {% endif %}
+  </div>
+{% endfor %}
+
+<h2>Notable events (top {{ aggregates.notable_events|length }})</h2>
+{% if aggregates.notable_events %}
+  <table>
+    <thead>
+      <tr><th>When</th><th>Type</th><th>Source</th><th>Camera</th><th>Severity</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      {% for ev in aggregates.notable_events %}
+      <tr>
+        <td>{{ ev.event_time_utc }}</td>
+        <td>{{ ev.event_type }}</td>
+        <td>{{ ev.event_source }}</td>
+        <td>{{ ev.camera_id }}</td>
+        <td class="num">{% if ev.severity is not none %}{{ "%.2f"|format(ev.severity) }}{% else %}—{% endif %}</td>
+        <td>{{ ev.title or "" }}{% if ev.description %} — {{ ev.description }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% else %}
+  <p class="empty">No notable events recorded this week.</p>
+{% endif %}
+
+<div class="footer">
+  Template {{ template_version }} · Panoptic M9 · {{ serial_number }} · {{ iso_week }}
+</div>
+
+</body>
+</html>

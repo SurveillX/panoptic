@@ -1,5 +1,10 @@
 """
-Prompts for the period summarization endpoint.
+Prompts for period-summary synthesis (used by both the /v1/summarize/period
+HTTP handler and the M9 report_generate worker).
+
+Lifted verbatim from services/search_api/period_summary_prompt.py in M9 P9.1
+to colocate with shared/report/synthesis.py. Content identical to prior
+version; zero prompt-text changes.
 
 Two VLM calls:
   - per-camera synthesis (multimodal; JPEGs attached)
@@ -12,7 +17,8 @@ labels back to real record IDs before the response leaves the service.
 
 from __future__ import annotations
 
-from .schemas import CameraSummary, SummaryType
+# Reverse import — see shared/report/synthesis.py module docstring for context.
+from services.search_api.schemas import CameraSummary, SummaryType
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +114,102 @@ Return a single JSON object with exactly these keys and nothing else:
 - "headline" must be <= 160 characters.
 - "summary" must be between 3 and 6 sentences, <= 900 characters.
 """
+
+
+# ---------------------------------------------------------------------------
+# Weekly synthesis (M9 P9.4)
+# ---------------------------------------------------------------------------
+
+WEEKLY_SYSTEM_MESSAGE = """\
+You are writing a weekly operational summary for a work-site trailer, \
+rolling up the per-day summaries that were generated earlier.
+
+Grounding rules:
+- Work ONLY from the per-day summaries and aggregation counts provided. \
+Do not invent days, cameras, events, or counts.
+- Identify the main themes across the week (rising activity, incidents, \
+quiet periods, equipment patterns). Be concrete.
+- If coverage was thin on any day (low confidence or no data), reflect \
+that honestly in the weekly summary and lower the confidence field.
+- Prefer understatement to overclaiming.
+
+Day ID contract:
+- Each per-day summary arrives with a day key like "2026-04-13".
+- In supporting_day_ids, cite only keys that were actually provided.
+- Do not invent day IDs.
+
+Output contract:
+Return a single JSON object with exactly these keys and nothing else:
+  {
+    "headline": "<one short sentence capturing the week>",
+    "summary":  "<4-8 sentences>",
+    "supporting_day_ids": ["YYYY-MM-DD", ...],
+    "confidence": <float 0.0 to 1.0>
+  }
+
+- No markdown. No prose outside the JSON object.
+- "headline" must be <= 180 characters.
+- "summary" must be between 4 and 8 sentences, <= 1200 characters.
+"""
+
+
+def build_weekly_user_prompt(
+    *,
+    serial_number: str,
+    window_start: str,
+    window_end: str,
+    day_entries: list[dict],
+    aggregates: dict,
+) -> str:
+    """
+    Build the user message for one weekly synthesis call.
+
+    day_entries: ordered list of dicts with keys {day_key, headline,
+                 summary, confidence} where day_key is YYYY-MM-DD.
+    aggregates:  dict from compute_weekly_aggregates — used as factual
+                 grounding alongside the narrative.
+    """
+    lines: list[str] = []
+    lines.append(f"Trailer: {serial_number}")
+    lines.append(f"Week: {window_start} to {window_end}")
+    lines.append("")
+
+    lines.append("Per-day summaries:")
+    if day_entries:
+        for d in day_entries:
+            lines.append(
+                f"[{d['day_key']}] confidence={d['confidence']:.2f}\n"
+                f"  headline: {d['headline']}\n"
+                f"  summary:  {d['summary']}"
+            )
+    else:
+        lines.append("(No per-day summaries available — no daily reports "
+                     "had succeeded for this week.)")
+    lines.append("")
+
+    lines.append("Aggregation (factual grounding — do not rewrite):")
+    event_totals = aggregates.get("event_type_totals", {})
+    if event_totals:
+        parts = ", ".join(f"{k}={v}" for k, v in event_totals.items())
+        lines.append(f"  Events by type: {parts} (total {aggregates.get('total_events', 0)})")
+    else:
+        lines.append("  Events by type: none")
+
+    image_totals = aggregates.get("image_trigger_totals", {})
+    if image_totals:
+        parts = ", ".join(f"{k}={v}" for k, v in image_totals.items())
+        lines.append(f"  Images by trigger: {parts} (total {aggregates.get('total_images', 0)})")
+
+    cameras_seen = aggregates.get("cameras_seen", 0)
+    lines.append(f"  Cameras with data: {cameras_seen}")
+    lines.append(f"  Buckets captured: {aggregates.get('total_buckets', 0)}")
+    lines.append("")
+
+    lines.append(
+        "Produce one JSON object matching the schema in the system message. "
+        "Stay grounded in the per-day summaries and aggregation above."
+    )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

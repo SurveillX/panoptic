@@ -2,10 +2,16 @@
 Panoptic Search API — FastAPI application.
 
 Endpoints:
-  POST /v1/search — search summaries, images, and events
-  GET  /health    — health check
+  POST /v1/search                             — search summaries, images, and events
+  POST /v1/search/verify                      — verify hits with VLM citations
+  POST /v1/summarize/period                   — multi-camera period summary
+  POST /v1/reports/daily                      — enqueue daily report (M9)
+  POST /v1/reports/weekly                     — enqueue weekly report (M9)
+  GET  /v1/reports/{report_id}                — report status + metadata (M9)
+  GET  /v1/reports/{report_id}/assets/{id}.jpg — authorized image asset (M9)
+  GET  /health                                — health check
 
-See /home/bryan/.claude/plans/quirky-honking-peacock.md for the design.
+See /home/bryan/.claude/plans/quirky-honking-peacock.md for the original design.
 """
 
 from __future__ import annotations
@@ -19,9 +25,16 @@ from pydantic import ValidationError
 
 from shared.clients.embedding import EmbeddingClient
 from shared.clients.vlm import VLMClient, get_vlm_client
+from shared.utils.redis_client import get_redis_client
 
 from .executor import execute_search
 from .period_summary import run_period_summary
+from .reports import (
+    generate_daily_report,
+    generate_weekly_report,
+    get_report_asset,
+    get_report_status,
+)
 from .schemas import PeriodSummarizeRequest, SearchRequest, VerifyRequest
 from .verify import run_verification
 
@@ -42,6 +55,7 @@ def create_app(
         from shared.clients.vl_embedding import get_vl_embedding_client
         vl_embedder = get_vl_embedding_client()
     _vl_embedder = vl_embedder
+    _redis = get_redis_client()
 
     @app.get("/health")
     def health():
@@ -113,5 +127,25 @@ def create_app(
             )
 
         return response.model_dump()
+
+    # ------------------------------------------------------------------
+    # M9 — report endpoints
+    # ------------------------------------------------------------------
+
+    @app.post("/v1/reports/daily")
+    def reports_daily(request: Request, body: dict):
+        return generate_daily_report(engine, _redis, body)
+
+    @app.post("/v1/reports/weekly")
+    def reports_weekly(request: Request, body: dict):
+        return generate_weekly_report(engine, _redis, body)
+
+    @app.get("/v1/reports/{report_id}")
+    def reports_status(report_id: str):
+        return get_report_status(engine, report_id)
+
+    @app.get("/v1/reports/{report_id}/assets/{image_id}.jpg")
+    def reports_asset(report_id: str, image_id: str):
+        return get_report_asset(engine, report_id, image_id)
 
     return app

@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 JobType = Literal[
     "bucket_summary", "rollup_summary", "embedding_upsert", "recompute_summary",
     "image_caption", "caption_embed", "image_embed", "event_produce",
+    "report_generate",
 ]
 JobState = Literal[
     "pending",
@@ -91,6 +92,19 @@ def make_event_produce_image_key(image_id: str) -> str:
 
 def make_event_produce_bucket_key(bucket_id: str) -> str:
     return f"event_produce:bucket:{bucket_id}"
+
+
+def make_report_generate_key(
+    serial_number: str, kind: str, window_start_utc: datetime,
+) -> str:
+    """
+    Deterministic job_key for M9 report_generate.
+
+    Matches the (serial, kind, window_start) uniqueness contract of
+    panoptic_reports — rerunning a report for the same window reuses
+    the same job_key and gets ON CONFLICT DO NOTHING idempotency.
+    """
+    return f"report_generate:{serial_number}:{kind}:{window_start_utc.isoformat()}"
 
 
 # ---------------------------------------------------------------------------

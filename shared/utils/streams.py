@@ -48,6 +48,7 @@ STREAM_FOR_JOB_TYPE: dict[str, str] = {
     "caption_embed":     "panoptic:jobs:caption_embed",
     "image_embed":       "panoptic:jobs:image_embed",
     "event_produce":     "panoptic:jobs:event_produce",
+    "report_generate":   "panoptic:jobs:report_generate",
 }
 
 DLQ_FOR_JOB_TYPE: dict[str, str] = {
@@ -59,6 +60,7 @@ DLQ_FOR_JOB_TYPE: dict[str, str] = {
     "caption_embed":     "panoptic:dlq:caption_embed",
     "image_embed":       "panoptic:dlq:image_embed",
     "event_produce":     "panoptic:dlq:event_produce",
+    "report_generate":   "panoptic:dlq:report_generate",
 }
 
 # Each stream has exactly one consumer group.
@@ -71,6 +73,7 @@ CONSUMER_GROUP_FOR_STREAM: dict[str, str] = {
     "panoptic:jobs:caption_embed":    "panoptic-caption-embed-workers",
     "panoptic:jobs:image_embed":      "panoptic-image-embed-workers",
     "panoptic:jobs:event_produce":    "panoptic-event-producer-workers",
+    "panoptic:jobs:report_generate":  "panoptic-report-generator-workers",
 }
 
 # Convenience: group name by job type.

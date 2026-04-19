@@ -37,18 +37,19 @@ mkwindow() {
   fi
 }
 
-mkwindow webhook        services.trailer_webhook.server
-mkwindow caption        services.panoptic_image_caption_worker.worker
-mkwindow cap_embed      services.panoptic_caption_embed_worker.worker
-mkwindow img_embed      services.panoptic_image_embed_worker.worker
-mkwindow summary        services.panoptic_summary_agent.worker
-mkwindow sum_embed      services.panoptic_embedding_worker.worker
-mkwindow rollup         services.panoptic_rollup_worker.worker
-mkwindow event_producer services.panoptic_event_producer.worker
-mkwindow reclaimer      services.panoptic_reclaimer.worker
-mkwindow search         services.search_api.server
+mkwindow webhook         services.trailer_webhook.server
+mkwindow caption         services.panoptic_image_caption_worker.worker
+mkwindow cap_embed       services.panoptic_caption_embed_worker.worker
+mkwindow img_embed       services.panoptic_image_embed_worker.worker
+mkwindow summary         services.panoptic_summary_agent.worker
+mkwindow sum_embed       services.panoptic_embedding_worker.worker
+mkwindow rollup          services.panoptic_rollup_worker.worker
+mkwindow event_producer  services.panoptic_event_producer.worker
+mkwindow report_gen      services.panoptic_report_generator.worker
+mkwindow reclaimer       services.panoptic_reclaimer.worker
+mkwindow search          services.search_api.server
 
 tmux select-window -t "$SESSION:webhook"
 
-echo "started panoptic tmux session with 10 windows."
+echo "started panoptic tmux session with 11 windows."
 echo "attach:  tmux a -t $SESSION"

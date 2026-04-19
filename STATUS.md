@@ -1,4 +1,4 @@
-# Panoptic — System Status (2026-04-18, end of day, refresh #2)
+# Panoptic — System Status (2026-04-19, refresh #4)
 
 Briefing document for external AI collaborators and future-self sessions.
 Self-contained.
@@ -20,8 +20,10 @@ The central stack authenticates + dedup-checks pushes, captions images
 via Gemma-4-26b (vision), summarizes buckets via Gemma text (optionally
 with keyframes from the trailer's Continuum), embeds captions and
 summaries with Qwen3-Embedding-8B into Qdrant, additionally **embeds
-each image natively with Qwen3-VL-Embedding-8B** (M5), and serves
-hybrid semantic search over the history via the Search API.
+each image natively with Qwen3-VL-Embedding-8B** (M5), **produces
+first-class `panoptic_events` rows from image triggers and bucket
+markers** (M8), and serves hybrid semantic search over the history via
+the Search API.
 
 ---
 
@@ -68,7 +70,7 @@ Image files: `/data/panoptic-store/images/<serial>/<camera>/<yyyy>/<mm>/<dd>/<im
 | `panoptic-qdrant` | 6333 / 6334 | Qdrant v1.13.6 |
 | `panoptic-redis` | 6379 | Redis 7 |
 
-### 4.2 Application processes (tmux session `panoptic`, **9 windows**)
+### 4.2 Application processes (tmux session `panoptic`, **11 windows**)
 
 | Window | Port | Role |
 |---|---|---|
@@ -79,8 +81,10 @@ Image files: `/data/panoptic-store/images/<serial>/<camera>/<yyyy>/<mm>/<dd>/<im
 | `summary` | 8203 | Bucket summaries (Gemma text, optional keyframes) |
 | `sum_embed` | 8204 | Summary → Qdrant `panoptic_summaries` |
 | `rollup` | 8205 | Multi-level rollups |
+| `event_producer` | 8207 | **image/bucket → `panoptic_events` rows (M8)** |
+| `report_gen` | 8208 | **daily/weekly HTML reports (M9)** |
 | `reclaimer` | 8210 | Lease expiry recovery + stream re-enqueue (30 s tick) |
-| `search` | 8600 | Search API (hybrid retrieval: caption + VL) |
+| `search` | 8600 | Search API (hybrid retrieval: caption + VL, M9 report endpoints) |
 
 Start/observe: `cd ~/panoptic && ./scripts/tmux-dev.sh` then
 `tmux a -t panoptic`.
@@ -101,13 +105,16 @@ Logs tee'd to `~/panoptic/logs/*.log`, rotated daily × 14 copies.
 | `panoptic_buckets` | ~220 | mostly real trailer `1422725077375` (running ~15h) |
 | `panoptic_images` | ~141 | mostly real trailer, rest synthetic |
 | `panoptic_summaries` | ~233 | real trailer rollups + period summaries |
+| `panoptic_events` (M8) | 163 | 58 image_trigger + 105 bucket_marker; content-addressed event_ids |
+| `panoptic_camera_aliases` (M8) | 0 | inert — insert rows only when a trailer emits mismatched camera_ids across payloads |
+| `panoptic_reports` (M9) | growing | async HTML reports: daily + weekly, 90-day disk retention |
 | `panoptic_jobs` | ~885 | all terminal (succeeded / failed_terminal / degraded) |
 | `panoptic_trailers` | 6 active | registry (real trailer + 4 synthetic + SMOKE-TEST) |
 | `image_caption_vectors` (Qdrant, 4096-dim cosine) | 141 pts | caption-text embeddings |
 | `panoptic_image_vectors` (Qdrant, 4096-dim cosine) | 141 pts | VL-native image embeddings (M5) |
 | `panoptic_summaries` (Qdrant, 4096-dim cosine) | 233 pts | summary-text embeddings |
 
-Alembic at migration **007**.
+Alembic at migration **010**.
 
 ---
 
@@ -121,7 +128,9 @@ Alembic at migration **007**.
 | M5 | VL image retrieval (+ opt-in VL final rerank) | ✅ done |
 | M4 | Full idempotency + crash-recovery validation | ✅ done — 6/6 dep-outage tests, worker-restart-storm + duplicate-flood both verified |
 | M6 | Move panoptic-store to dedicated machine | pending (blocked on hardware) |
-| M7 | Containerize workers | ✅ done — `docker compose up -d` brings up the 9-service stack, all healthy, end-to-end push + search verified through containers |
+| M7 | Containerize workers | ✅ done — `docker compose up -d` brings up the 11-service stack (M9 added report_generator), all healthy, end-to-end push + search verified through containers |
+| M8 | Unified event layer (panoptic_events + producer worker) | ✅ done — 58/58 image triggers + 105/105 bucket markers converted; Search API + period summary both cite real event_ids; backfill is zero-insert on rerun |
+| M9 | Async report generation (daily + weekly HTML) | ✅ done — `POST /v1/reports/{daily,weekly}` enqueue via new `panoptic_report_generator` worker; content-addressed report_ids; authorized asset endpoint; weekly aggregation SQL tables + per-day narrative roll-up; 90-day on-disk retention; cron entries documented in `docs/REPORTS.md` |
 
 ---
 
@@ -220,6 +229,101 @@ hit sets use VL on the top-8 and preserve original order for the
 tail. Default stays `text` — flip when real surveillance imagery
 dominates the workload.
 
+### 6.9 M8 — unified event layer
+
+New `panoptic_events` table (migration 008) + `panoptic_event_producer`
+worker (new 10th service) unify image-trigger events and bucket-level
+markers under a single content-addressed `event_id` space.
+
+**Schema:** `event_id` (SHA256 PK), `event_source` IN
+('image_trigger','bucket_marker'), `event_type` (canonical: e.g.
+`alert_created`, `anomaly_detected`, `activity_spike`,
+`after_hours_activity`), `severity`/`confidence`, full time triple
+(`start_time_utc`/`end_time_utc`/`event_time_utc`), optional
+enrichment refs (`bucket_id`/`image_id`), `title`/`description`,
+`metadata_json`. Identity hash excludes enrichment — verified
+idempotent under manual enrichment attachment.
+
+**Wiring:**
+- `trailer_webhook` enqueues `event_produce` after every alert/anomaly
+  image commit.
+- `cognia.ingest_bucket` enqueues after every bucket commit with
+  non-empty `event_markers`.
+- `services/panoptic_event_producer/executor.py` handles both
+  `source_type='image'` and `source_type='bucket'`, INSERT ... ON
+  CONFLICT DO NOTHING.
+- `scripts/backfill_events.py --source image|bucket|all --apply`
+  covers historic data (58 images + 105 markers backfilled).
+
+**Downstream:**
+- Search API `EventHit` cleanly cut to event-native fields (no legacy
+  trigger/captured_at/caption_text). New filters: `event_type`,
+  `event_source`. Filter-only browse queries `panoptic_events`
+  directly; semantic browse hydrates via `image_id` FK.
+- `/v1/search/verify` and `/v1/summarize/period` both now cite real
+  64-char `event_id`s. Period summary prompt now surfaces
+  bucket_marker events (spikes, after-hours) to the VLM.
+
+**Camera-ID canonicalization (migration 009):**
+Inert `panoptic_camera_aliases` table + `shared/canonical/camera.py`
+resolver. Deploys no-op until an operator inserts a row; intended to
+collapse trailer-emitted bucket vs image camera_id mismatches. Unused
+today because no alias has been inserted — the first real trailer's
+mismatch is the canonical use case (see §7 gaps).
+
+**Bucket markers v1:** `spike` + `after_hours` only. `drop`, `start`,
+`late_start`, `underperforming` remain as consumer-branch stubs in
+the summary agent; deferred to a follow-on phase.
+
+### 6.10 M9 — async report generation
+
+HTML daily + weekly reports per trailer, generated by a new
+`panoptic_report_generator` worker (11th service, health port 8208)
+consuming the `panoptic:jobs:report_generate` stream.
+
+**Enqueue paths (share one helper):**
+- `POST /v1/reports/daily` / `POST /v1/reports/weekly` → immediate
+  `{report_id, status}` response, job runs async.
+- `scripts/generate_reports.py --daily|--weekly --all-active` — cron
+  driver calls the same `_enqueue_report` function in-process (no HTTP
+  round-trip), identical semantics.
+
+**Lifecycle:** `pending → running → success` on happy path; `pending →
+running → failed` (with `last_error`) on terminal failure. The `running`
+transition uses a short external commit so it's observable while the
+main job transaction is still in flight. `max_attempts=1` — VLM failures
+go straight to DLQ; retry via `scripts/dlq_replay.py`.
+
+**Daily output:** one VLM pass per camera (5 on a typical trailer), one
+fusion pass, renders HTML with per-camera narratives + images + events
+table. Typical generation time ~10-15s for 5 cameras.
+
+**Weekly output:** aggregates 7-day counts via direct SQL
+(`shared/report/aggregate.py`) for event-type totals, per-camera rank,
+image-trigger totals, notable events. Fuses the 7 daily report
+narratives (cached in `panoptic_reports.metadata_json.overall`) via one
+weekly VLM call. Missing days render as placeholders.
+
+**Storage:**
+`/data/panoptic-store/reports/<serial>/<yyyy>/<mm>/<serial>-<stamp>-<kind>.html`
+(stamp is `YYYYMMDD` for daily, `GW%V` for weekly). Configurable via
+`REPORT_STORAGE_ROOT`.
+
+**Provenance + asset auth:** `metadata_json` carries four cited-id
+lists (`image`, `event`, `summary`, `camera`). The
+`GET /v1/reports/<id>/assets/<image_id>.jpg` endpoint authorizes by
+checking `image_id ∈ cited_image_ids` for that report_id, preventing
+the endpoint from becoming a generic image proxy.
+
+**Retention:** `scripts/prune_reports.py --apply --keep-days 90` runs
+in nightly cron at 03:45 UTC. Deletes HTML files but retains Postgres
+rows (small; preserve history). Policy + cron entries in
+`docs/REPORTS.md`.
+
+**template_version** ("v1") is metadata-only — NOT part of the
+content-addressed `report_id`. Bumping the template regenerates in
+place, no new row.
+
 ---
 
 ## 7. Known Gaps (Current)
@@ -228,6 +332,8 @@ dominates the workload.
 |---|---|---|
 | Off-box backup target not wired | medium | Backups live on the same disk as primary data. Needs SSH setup from Bryan to the DO gateway (or to a second box post-M6). See `docs/RESTORE.md` §Off-box backup. |
 | No active paging on health_watch alerts | medium | Alerts go to stdout → cron `logs/cron.log`. No push (email/slack/pagerduty). Will mail via MAILTO env if user configures it. |
+| Four bucket-marker types not derived | low | `drop`, `start`, `late_start`, `underperforming` are referenced by the summary agent's consumer branches but no derivation logic produces them (M8 D-1c). Branches fire only when derivation lands. |
+| Real trailer has no alert/anomaly images yet | low | Trailer `1422725077375` has only baseline images so far (107, zero alerts/anomalies). We can't end-to-end test cross-source event cohesion until the anomaly detector fires. Raw camera_ids already match between payloads, so when the first alert does fire it should land on the existing bucket_marker scope_id automatically. |
 | Postgres/Qdrant "slow but up" not characterized | low | Would look like a hang to the reclaimer; LEASE_TTL=120s eventually recovers but surfacing is poor. |
 | Multi-Spark DB + image storage | deferred to M6 | Image files at `/data/panoptic-store/` are local-FS. NFS mount = zero code change. |
 | Synthetic harness regressed 2 queries with hybrid retrieval | low | VL amplifies real over synthetic. Not worth tuning — real data is what matters. Worth re-scoring once we hand-label a batch of real-trailer images. |
@@ -245,20 +351,20 @@ cd ~/panoptic-store && docker compose up -d
 # GPU services
 cd ~/panoptic-retrieval && docker compose up -d
 cd ~/panoptic-vllm && docker compose up -d
-# Application (9 containers — M7)
+# Application (11 containers — M7 + M8 event_producer + M9 report_generator)
 cd ~/panoptic && docker compose up -d
 # Ingress tunnel
 sudo systemctl start frpc
 ```
 
 Dev-only alternative: `cd ~/panoptic && ./scripts/tmux-dev.sh` runs the
-9 workers directly in a tmux session using the host venv. Don't run
+11 workers directly in a tmux session using the host venv. Don't run
 both — they collide on ports.
 
 ### Status
 
 ```bash
-~/panoptic/scripts/dashboard.sh              # all 9 workers + containers + disk
+~/panoptic/scripts/dashboard.sh              # all 11 workers + containers + disk
 ~/panoptic/scripts/watch_trailer.sh <serial> # live per-trailer view
 ```
 
@@ -302,6 +408,42 @@ cd ~/panoptic-store && bash backup/qdrant_snapshot.sh # Qdrant snapshots
 .venv/bin/python scripts/reembed_images.py --force # every image
 ```
 
+### Backfill events (after adding a camera alias or derivation change)
+
+```bash
+# Dry-run (default) — counts only, no writes
+.venv/bin/python scripts/backfill_events.py --source all
+# Apply — idempotent via content-addressed event_id
+.venv/bin/python scripts/backfill_events.py --source all --apply
+# Restrict to one serial
+.venv/bin/python scripts/backfill_events.py --source image --serial <SN> --apply
+```
+
+### Generate reports (on-demand and cron)
+
+```bash
+# Daily on-demand via HTTP
+curl -sSf -X POST http://localhost:8600/v1/reports/daily \
+    -H 'Content-Type: application/json' \
+    -d '{"serial_number":"<SN>","date":"2026-04-18"}'
+
+# Poll status
+curl -sSf http://localhost:8600/v1/reports/<report_id> | jq .
+
+# Full-fleet dry-run (same shape as cron)
+.venv/bin/python scripts/generate_reports.py --daily --all-active --date 2026-04-18
+.venv/bin/python scripts/generate_reports.py --daily --all-active --date 2026-04-18 --apply
+
+# Weekly
+.venv/bin/python scripts/generate_reports.py --weekly --all-active --iso-week 2026W16 --apply
+
+# Prune expired HTML (90-day default)
+.venv/bin/python scripts/prune_reports.py --dry-run
+.venv/bin/python scripts/prune_reports.py --apply
+```
+
+Cron entries in `docs/REPORTS.md`.
+
 ### Live smoke
 
 ```bash
@@ -314,8 +456,19 @@ curl https://panoptic.surveillx.ai/health    # proves ingress end-to-end
 
 ## 9. Git History (session)
 
-14 commits on `main` today, starting from yesterday's head
-`203fd24`. Highlights:
+Through 2026-04-19 — M9 report generation landed on top of the M8
+event layer. Uncommitted at time of this refresh; will be committed as
+a single `feat(M9)` commit at end-of-phase.
+
+Highlights (prior commits):
+
+```
+9ead12c feat(M8): unified event layer — panoptic_events table + producer
+8c79847 feat(M7): containerize the full worker stack
+74edd77 feat(ops): backup + restore hardening — retention, freshness check, docs
+```
+
+Earlier in the day:
 
 ```
 74dbda9 docs(M4): failure_modes — empirical results from 4 dep-outage tests
@@ -340,8 +493,8 @@ fe3e9b5 chore: .gitignore + .env.example + stale vlm model refs
 
 ## 10. What the Next Session Should Pick Up
 
-M1–M5 are all done. The remaining roadmap items plus the known
-operational gaps:
+M1–M5 + M7 + M8 + M9 are all done. The remaining roadmap items plus
+the known operational gaps:
 
 **Off-box backup (top of list):**
 - Set up SSH key from Spark → DO gateway droplet (user action).
@@ -357,11 +510,32 @@ operational gaps:
 - Rehearse backup/restore on the target host before migrating live data.
 
 **M7 — containerize workers (✅ done):**
-Dockerfile + docker-compose.yml landed. 9 services (webhook, 7 workers,
+Dockerfile + docker-compose.yml landed. 10 services (webhook, 8 workers,
 search_api) on host network mode, source bind-mounted for dev iteration,
 json-file log rotation (50MB × 5 files). `tmux-dev.sh` kept as an
 alternative for deep code-edit loops. Full stack healthy end-to-end on
 first boot.
+
+**M8 — unified event layer (✅ done):**
+`panoptic_events` table + producer worker landed. See §6.9. Known
+follow-ons: (a) insert the camera alias row for trailer `1422725077375`
+once Bryan decides the canonical id (gap in §7); (b) write derivation
+logic for `drop`/`start`/`late_start`/`underperforming` if we want
+those bucket markers in v2.
+
+**M9 — async report generation (✅ done):**
+New `panoptic_report_generator` worker + `panoptic_reports` table +
+four HTTP endpoints. See §6.10 and `docs/REPORTS.md`. Pick up next with:
+install the cron entries, generate a first real batch for the active
+fleet, iterate on the HTML template based on what operators find
+useful. M9.1 candidates (all explicitly deferred): verify-integration
+on headlines, PDF export, email/Slack delivery, branded styling,
+on-the-fly missing-day synthesis in weekly.
+
+**M10 — operator evidence browser (next milestone):**
+Thin web UI over the existing APIs. See planning doc — not yet
+detailed-planned, will need its own kickoff doc once M9 has some live
+data to render against.
 
 **Optional — VL rerank A/B:**
 - Hand-label ~20 real-trailer queries with ground-truth relevant images.
