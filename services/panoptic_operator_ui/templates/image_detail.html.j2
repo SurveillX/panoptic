@@ -1,0 +1,61 @@
+{% extends "base.html.j2" %}
+{% block title %}Image {{ image.image_id[:12] }}… — Panoptic Operator{% endblock %}
+{% block content %}
+
+<section class="panel page-header">
+  <nav class="crumbs">
+    <a href="/">Fleet</a>
+    <span>/</span>
+    <a href="/trailer/{{ image.serial_number }}/{{ day }}">{{ image.serial_number }}</a>
+    <span>/</span>
+    <span>Image</span>
+  </nav>
+  <h1>
+    Image
+    <span class="tag trg trg-{{ image.trigger }}">{{ image.trigger }}</span>
+  </h1>
+  <p class="muted small">Image ID: <code class="small">{{ image.image_id }}</code></p>
+</section>
+
+<section class="panel image-detail-panel">
+  <div class="image-detail-wrap">
+    <a href="{{ search_api_url }}/v1/images/{{ image.image_id }}.jpg" target="_blank">
+      <img src="{{ search_api_url }}/v1/images/{{ image.image_id }}.jpg"
+           alt="{{ image.image_id[:12] }}" class="image-detail-img">
+    </a>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Caption</h2>
+  {% if image.caption_text %}
+    <p class="caption-text">{{ image.caption_text }}</p>
+  {% else %}
+    <p class="empty-state">No caption available{% if image.caption_status %} (status: <code>{{ image.caption_status }}</code>){% endif %}.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Metadata</h2>
+  <dl class="kv">
+    <dt>Serial</dt><dd><code>{{ image.serial_number }}</code></dd>
+    <dt>Camera</dt><dd><code>{{ image.camera_id }}</code></dd>
+    <dt>Scope</dt><dd><code>{{ image.scope_id }}</code></dd>
+    <dt>Trigger</dt><dd>{{ image.trigger }}</dd>
+    <dt>Captured (UTC)</dt><dd><code>{{ image.captured_at_utc or "—" }}</code></dd>
+    <dt>Bucket window (UTC)</dt><dd><code>{{ image.bucket_start_utc or "—" }}</code> → <code>{{ image.bucket_end_utc or "—" }}</code></dd>
+    <dt>Dimensions</dt><dd>{% if image.width and image.height %}{{ image.width }}×{{ image.height }}{% else %}—{% endif %}</dd>
+    <dt>Size</dt><dd>{% if image.size_bytes %}{{ image.size_bytes }} bytes{% else %}—{% endif %}</dd>
+    <dt>Caption status</dt><dd>{{ image.caption_status or "—" }}</dd>
+  </dl>
+</section>
+
+<section class="panel panel-muted">
+  <h2>Provenance</h2>
+  <p class="muted small">
+    Created <code>{{ image.created_at or "—" }}</code>
+    · Open trailer day view: <a href="/trailer/{{ image.serial_number }}/{{ day }}">{{ image.serial_number }} / {{ day }}</a>
+  </p>
+</section>
+
+{% endblock %}

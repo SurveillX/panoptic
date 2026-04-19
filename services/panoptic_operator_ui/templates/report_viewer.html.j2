@@ -1,0 +1,53 @@
+{% extends "base.html.j2" %}
+{% block title %}Report {{ report.report_id[:12] }}… — Panoptic Operator{% endblock %}
+{% block content %}
+
+<section class="panel page-header">
+  <nav class="crumbs">
+    <a href="/">Fleet</a>
+    <span>/</span>
+    <a href="/trailer/{{ report.serial_number }}/{{ report.window_start_utc[:10] }}">
+      {{ report.serial_number }}
+    </a>
+    <span>/</span>
+    <span>{{ report.kind|capitalize }} report · {{ report.window_start_utc[:10] }}</span>
+  </nav>
+  <h1>
+    {{ report.kind|capitalize }} report
+    <span class="muted">· {{ report.serial_number }}</span>
+  </h1>
+  <p class="muted small">
+    Window: <code>{{ report.window_start_utc }}</code> → <code>{{ report.window_end_utc }}</code>
+    · Status: <strong>{{ report.status }}</strong>
+    {% if report.generated_at %}· Generated: <code>{{ report.generated_at[:19] }}Z</code>{% endif %}
+    · Report ID: <code class="small">{{ report.report_id }}</code>
+  </p>
+  {% if report.metadata and report.metadata.input_counts %}
+    <p class="muted small">
+      Inputs —
+      {% set ic = report.metadata.input_counts %}
+      events: {{ ic.events or 0 }} ·
+      images: {{ ic.images or 0 }} ·
+      summaries: {{ ic.summaries or 0 }} ·
+      cameras: {{ ic.cameras or 0 }}
+    </p>
+  {% endif %}
+</section>
+
+<section class="panel report-viewer-panel">
+  {% if report.status == "success" and report.storage_path %}
+    <iframe class="report-frame"
+            src="{{ search_api_url }}/v1/reports/{{ report.report_id }}/view"
+            title="Report {{ report.report_id[:12] }}"
+            sandbox="allow-same-origin allow-popups"></iframe>
+  {% else %}
+    <p class="empty-state">
+      Report is not ready yet (status: <strong>{{ report.status }}</strong>).
+      {% if report.last_error %}
+        <br>Last error: <code>{{ report.last_error[:300] }}</code>
+      {% endif %}
+    </p>
+  {% endif %}
+</section>
+
+{% endblock %}

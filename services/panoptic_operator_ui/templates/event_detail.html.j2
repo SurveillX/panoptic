@@ -1,0 +1,87 @@
+{% extends "base.html.j2" %}
+{% block title %}Event {{ event.event_id[:12] }}… — Panoptic Operator{% endblock %}
+{% block content %}
+
+<section class="panel page-header">
+  <nav class="crumbs">
+    <a href="/">Fleet</a>
+    <span>/</span>
+    <a href="/trailer/{{ event.serial_number }}/{{ day }}">{{ event.serial_number }}</a>
+    <span>/</span>
+    <span>Event</span>
+  </nav>
+  <h1>
+    <span class="tag evt-{{ event.event_type }}">{{ event.event_type }}</span>
+    <span class="muted">· {{ event.event_source }}</span>
+  </h1>
+  <p class="muted small">
+    Event ID: <code class="small">{{ event.event_id }}</code>
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Overview</h2>
+  <dl class="kv">
+    <dt>Serial</dt><dd><code>{{ event.serial_number }}</code></dd>
+    <dt>Camera</dt><dd><code>{{ event.camera_id }}</code></dd>
+    <dt>Scope</dt><dd><code>{{ event.scope_id }}</code></dd>
+    <dt>Type</dt><dd>{{ event.event_type }} <span class="muted small">({{ event.event_source }})</span></dd>
+    {% if event.title %}<dt>Title</dt><dd>{{ event.title }}</dd>{% endif %}
+    {% if event.description %}<dt>Description</dt><dd>{{ event.description }}</dd>{% endif %}
+    <dt>Severity</dt><dd>{% if event.severity is not none %}{{ "%.2f"|format(event.severity) }}{% else %}—{% endif %}</dd>
+    <dt>Confidence</dt><dd>{% if event.confidence is not none %}{{ "%.2f"|format(event.confidence) }}{% else %}—{% endif %}</dd>
+    <dt>Event time (UTC)</dt><dd><code>{{ event.event_time_utc or "—" }}</code></dd>
+    <dt>Window (UTC)</dt><dd><code>{{ event.start_time_utc or "—" }}</code> → <code>{{ event.end_time_utc or "—" }}</code></dd>
+  </dl>
+</section>
+
+{% if event.image_id or event.bucket_id %}
+<section class="panel">
+  <h2>Linked evidence</h2>
+  <ul>
+    {% if event.image_id %}
+      <li>
+        <strong>Image:</strong>
+        <a href="/images/{{ event.image_id }}"><code class="small">{{ event.image_id[:16] }}…</code></a>
+        — open image detail
+      </li>
+    {% endif %}
+    {% if event.bucket_id %}
+      <li>
+        <strong>Bucket:</strong>
+        <code class="small">{{ event.bucket_id[:16] }}…</code>
+        <span class="muted small">(full bucket view not yet available in v1)</span>
+      </li>
+    {% endif %}
+  </ul>
+  {% if event.image_id %}
+    <div class="images">
+      <figure>
+        <a href="/images/{{ event.image_id }}">
+          <img src="{{ search_api_url }}/v1/images/{{ event.image_id }}.jpg"
+               alt="{{ event.image_id[:12] }}" loading="lazy">
+        </a>
+        <figcaption class="muted small">image preview</figcaption>
+      </figure>
+    </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if event.metadata_json %}
+<section class="panel">
+  <h2>Metadata</h2>
+  <pre class="json">{{ event.metadata_json | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+
+<section class="panel panel-muted">
+  <h2>Provenance</h2>
+  <p class="muted small">
+    Created <code>{{ event.created_at or "—" }}</code>
+    · Updated <code>{{ event.updated_at or "—" }}</code>
+    · Open trailer day view: <a href="/trailer/{{ event.serial_number }}/{{ day }}">{{ event.serial_number }} / {{ day }}</a>
+  </p>
+</section>
+
+{% endblock %}

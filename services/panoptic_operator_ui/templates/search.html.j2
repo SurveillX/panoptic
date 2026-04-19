@@ -1,0 +1,144 @@
+{% extends "base.html.j2" %}
+{% block title %}
+  {% if q %}Search: {{ q }} — Panoptic Operator{% else %}Search — Panoptic Operator{% endif %}
+{% endblock %}
+{% block content %}
+
+<section class="panel page-header">
+  <nav class="crumbs">
+    <a href="/">Fleet</a>
+    <span>/</span>
+    <span>Search</span>
+  </nav>
+  <h1>Search</h1>
+  <p class="muted small">
+    Browser-back and shareable URLs work — every search is a GET with the query and filters in the URL.
+  </p>
+
+  <form action="/search" method="get" class="search-form">
+    <div class="search-form-row">
+      <label class="grow">
+        Query
+        <input type="text" name="q" value="{{ q or '' }}" placeholder="e.g. person walking">
+      </label>
+      <label>
+        Top K
+        <input type="number" name="top_k" min="1" max="50" value="{{ top_k }}">
+      </label>
+    </div>
+    <div class="search-form-row">
+      <label>
+        Serial
+        <input type="text" name="serial" value="{{ serial or '' }}" placeholder="YARD-A-001">
+      </label>
+      <label>
+        Camera
+        <input type="text" name="camera" value="{{ camera or '' }}" placeholder="cam-01">
+      </label>
+      <fieldset class="inline">
+        <legend>Types</legend>
+        <label class="cb"><input type="checkbox" name="type" value="event"   {% if 'event' in types %}checked{% endif %}> events</label>
+        <label class="cb"><input type="checkbox" name="type" value="image"   {% if 'image' in types %}checked{% endif %}> images</label>
+        <label class="cb"><input type="checkbox" name="type" value="summary" {% if 'summary' in types %}checked{% endif %}> summaries</label>
+      </fieldset>
+      <button type="submit">Search</button>
+    </div>
+  </form>
+</section>
+
+{% if error %}
+  <section class="panel panel-muted">
+    <p class="empty-state">{{ error }}</p>
+  </section>
+{% elif not submitted %}
+  <section class="panel panel-muted">
+    <p class="empty-state">Enter a query or filters above to begin.</p>
+  </section>
+{% else %}
+  <section class="panel">
+    <h2>Results
+      <span class="muted small">
+        · {{ total }} total
+        · parse {{ timing.parse }}ms
+        · qdrant {{ timing.qdrant }}ms
+        · postgres {{ timing.postgres }}ms
+        · rerank {{ timing.rerank }}ms
+        · total {{ timing.total }}ms
+      </span>
+    </h2>
+
+    {% if total == 0 %}
+      <p class="empty-state">No results for this query + filter combination.</p>
+    {% endif %}
+
+    {% if results.events %}
+      <h3>Events ({{ results.events|length }})</h3>
+      <table class="events-table">
+        <thead>
+          <tr>
+            <th>Score</th>
+            <th>When (UTC)</th>
+            <th>Type</th>
+            <th>Camera</th>
+            <th>Title / description</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ev in results.events %}
+            <tr class="evt evt-{{ ev.event_type }}">
+              <td class="num">{{ "%.3f"|format(ev.score) }}</td>
+              <td class="tt-time"><code class="small">{{ ev.event_time_utc or "" }}</code></td>
+              <td>
+                <a href="/events/{{ ev.id }}">{{ ev.event_type }}</a>
+                <span class="muted small">· {{ ev.event_source }}</span>
+              </td>
+              <td>{{ ev.camera_id or "" }}<br><span class="muted small">{{ ev.serial_number or "" }}</span></td>
+              <td>{{ ev.title or "" }}{% if ev.description %} — {{ ev.description }}{% endif %}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+
+    {% if results.images %}
+      <h3>Images ({{ results.images|length }})</h3>
+      <div class="images">
+        {% for img in results.images %}
+          <figure>
+            <a href="/images/{{ img.id }}">
+              <img src="{{ search_api_url }}/v1/images/{{ img.id }}.jpg" alt="{{ img.id[:12] }}" loading="lazy">
+            </a>
+            <figcaption>
+              <span class="trg trg-{{ img.trigger }}">{{ img.trigger or "?" }}</span>
+              <span class="muted small">score {{ "%.3f"|format(img.score) }}</span>
+              <span class="muted small">{{ img.captured_at or img.bucket_start or "" }}</span>
+              {% if img.camera_id %}<span class="muted small">· {{ img.camera_id }}</span>{% endif %}
+              <div class="caption-text">{{ img.caption_text or "(no caption)" }}</div>
+            </figcaption>
+          </figure>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if results.summaries %}
+      <h3>Summaries ({{ results.summaries|length }})</h3>
+      <ul class="summary-list">
+        {% for s in results.summaries %}
+          <li>
+            <a href="/summaries/{{ s.id }}"><code class="small">{{ s.id[:16] }}…</code></a>
+            <span class="muted small">
+              · score {{ "%.3f"|format(s.score) }}
+              · {{ s.level or "?" }}
+              · {{ s.scope_id or "?" }}
+              · {{ s.start_time or "" }}
+              {% if s.key_events_labels %} · {{ s.key_events_labels|join(", ") }}{% endif %}
+            </span>
+            <div class="summary-body">{{ s.summary or "(no text)" }}</div>
+          </li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% endblock %}

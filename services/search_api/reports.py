@@ -397,3 +397,124 @@ def get_report_asset(engine, report_id: str, image_id: str):
         media_type="image/jpeg",
         filename=f"{image_id}.jpg",
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/reports — list recent reports for a trailer (M10 P10.1c slide-in)
+# ---------------------------------------------------------------------------
+
+
+def list_reports(
+    engine,
+    *,
+    serial_number: str | None,
+    kind: str | None,
+    limit: int,
+):
+    """
+    Return recent panoptic_reports rows in reverse-chronological order
+    by window_start_utc. Used by the operator UI's report-history panel
+    and (later) the full report browse page.
+
+    All filters are optional. limit is capped at 50.
+    """
+    if limit <= 0:
+        limit = 10
+    if limit > 50:
+        limit = 50
+
+    clauses: list[str] = []
+    params: dict = {"lim": limit}
+    if serial_number:
+        clauses.append("serial_number = :sn")
+        params["sn"] = serial_number
+    if kind:
+        if kind not in ("daily", "weekly"):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "kind must be 'daily' or 'weekly'"},
+            )
+        clauses.append("kind = :k")
+        params["k"] = kind
+
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    sql = sa_text(f"""
+        SELECT report_id, serial_number, kind,
+               window_start_utc, window_end_utc,
+               status, generated_at, created_at
+          FROM panoptic_reports
+          {where}
+         ORDER BY window_start_utc DESC, created_at DESC
+         LIMIT :lim
+    """)
+    with engine.connect() as conn:
+        rows = conn.execute(sql, params).mappings().all()
+
+    out = []
+    for r in rows:
+        out.append({
+            "report_id":        r["report_id"],
+            "serial_number":    r["serial_number"],
+            "kind":             r["kind"],
+            "window_start_utc": r["window_start_utc"].isoformat() if r["window_start_utc"] else None,
+            "window_end_utc":   r["window_end_utc"].isoformat() if r["window_end_utc"] else None,
+            "status":           r["status"],
+            "generated_at":     r["generated_at"].isoformat() if r["generated_at"] else None,
+            "created_at":       r["created_at"].isoformat() if r["created_at"] else None,
+        })
+    return {"reports": out, "count": len(out)}
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/reports/{report_id}/view — stream the stored HTML (M10)
+# ---------------------------------------------------------------------------
+
+
+def get_report_view(engine, report_id: str):
+    """
+    Stream the stored HTML report for iframe embedding by the M10
+    operator UI. Only serves reports in `success` state; returns 404
+    for anything else (not-found, pending, running, failed).
+
+    Requires `/data/panoptic-store/reports` bind-mounted on the
+    search_api container (added to docker-compose.yml for M10).
+    """
+    with engine.connect() as conn:
+        row = conn.execute(
+            sa_text("""
+                SELECT status, storage_path
+                  FROM panoptic_reports
+                 WHERE report_id = :rid
+            """),
+            {"rid": report_id},
+        ).fetchone()
+
+    if row is None:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "report not found"},
+        )
+    if row.status != "success" or not row.storage_path:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "report not ready"},
+        )
+
+    storage_path = row.storage_path
+    if not os.path.exists(storage_path):
+        log.warning(
+            "reports: view path missing on disk report=%s path=%s",
+            report_id, storage_path,
+        )
+        return JSONResponse(
+            status_code=404,
+            content={"error": "report file missing"},
+        )
+
+    # Don't pass filename= here — FileResponse converts it to a
+    # `content-disposition: attachment` header, which makes browsers
+    # trigger a download instead of rendering in an iframe.
+    return FileResponse(
+        storage_path,
+        media_type="text/html; charset=utf-8",
+    )

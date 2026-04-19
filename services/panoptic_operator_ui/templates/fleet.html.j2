@@ -1,0 +1,93 @@
+{% extends "base.html.j2" %}
+{% block title %}Fleet — Panoptic Operator{% endblock %}
+{% block content %}
+
+<section class="panel page-header">
+  <nav class="crumbs">
+    <span>Fleet</span>
+  </nav>
+  <h1>Fleet</h1>
+  <p class="muted small">
+    {{ data.count }} active trailer{% if data.count != 1 %}s{% endif %}
+    · snapshot <code>{{ data.generated_at_utc[:19] }}Z</code>
+    · click a row for today's view
+  </p>
+</section>
+
+<section class="panel">
+  {% if data.trailers %}
+    <table class="fleet-table">
+      <thead>
+        <tr>
+          <th>Serial</th>
+          <th>Name</th>
+          <th>Last bucket (UTC)</th>
+          <th>Last image (UTC)</th>
+          <th class="num">Events 24h</th>
+          <th>Latest daily report</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in data.trailers %}
+          <tr>
+            <td>
+              <a href="/trailer/{{ t.serial_number }}/{{ today }}">
+                <code>{{ t.serial_number }}</code>
+              </a>
+            </td>
+            <td>{{ t.name or "—" }}</td>
+            <td>
+              {% if t.last_bucket_start_utc %}
+                <code class="small">{{ t.last_bucket_start_utc[:19] }}Z</code>
+              {% else %}
+                <span class="muted small">no bucket data</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if t.last_image_captured_at_utc %}
+                <code class="small">{{ t.last_image_captured_at_utc[:19] }}Z</code>
+              {% else %}
+                <span class="muted small">no images</span>
+              {% endif %}
+            </td>
+            <td class="num">{{ t.event_count_24h }}</td>
+            <td>
+              {% if t.latest_daily_report_id %}
+                <a href="/reports/{{ t.latest_daily_report_id }}/view">
+                  {{ t.latest_daily_report_window_start_utc[:10] }}
+                </a>
+                <span class="muted small">
+                  {% if t.latest_daily_report_generated_at %}
+                    · generated {{ t.latest_daily_report_generated_at[:19] }}Z
+                  {% endif %}
+                </span>
+              {% else %}
+                <span class="muted small">no reports yet</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty-state">No active trailers in the fleet.</p>
+  {% endif %}
+</section>
+
+<section class="panel panel-muted">
+  <h2>Jump to trailer/day</h2>
+  <form action="" method="get"
+        onsubmit="event.preventDefault();
+                 var sn = this.serial.value.trim();
+                 var d = this.day.value;
+                 if (sn && d) { window.location = '/trailer/' + encodeURIComponent(sn) + '/' + encodeURIComponent(d); }">
+    <fieldset>
+      <legend>Open a specific trailer on a specific UTC date</legend>
+      <label>Serial <input type="text" name="serial" placeholder="YARD-A-001" required></label>
+      <label>Date (UTC) <input type="date" name="day" value="{{ today }}" required></label>
+      <button type="submit">Open</button>
+    </fieldset>
+  </form>
+</section>
+
+{% endblock %}

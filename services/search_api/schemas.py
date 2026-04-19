@@ -294,3 +294,176 @@ class PeriodSummarizeResponse(BaseModel):
     camera_summaries: list[CameraSummary] = Field(default_factory=list)
     overall: OverallSummary
     timing_ms: PeriodTimingMs
+
+
+# ---------------------------------------------------------------------------
+# M10 — Operator UI read endpoints
+# ---------------------------------------------------------------------------
+
+
+class TrailerDayEvent(BaseModel):
+    """One event row, shaped for the trailer-day rollup."""
+
+    event_id: str
+    event_type: str
+    event_source: str
+    camera_id: str | None = None
+    severity: float | None = None
+    confidence: float | None = None
+    event_time_utc: str | None = None
+    title: str | None = None
+    description: str | None = None
+    bucket_id: str | None = None
+    image_id: str | None = None
+
+
+class TrailerDayImage(BaseModel):
+    """One image (after dedup), shaped for the trailer-day rollup."""
+
+    image_id: str
+    camera_id: str | None = None
+    trigger: str | None = None
+    captured_at: str | None = None
+    bucket_start: str | None = None
+    caption_text: str | None = None
+
+
+class TrailerDaySummary(BaseModel):
+    """One summary, shaped for the trailer-day rollup."""
+
+    summary_id: str
+    camera_id: str | None = None
+    level: str | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    summary: str | None = None
+    confidence: float | None = None
+
+
+class TrailerDayPerCamera(BaseModel):
+    """Per-camera mini-row for the trailer-day rollup table."""
+
+    camera_id: str
+    event_count: int = 0
+    image_count: int = 0
+    summary_count: int = 0
+
+
+class TrailerDayResponse(BaseModel):
+    """
+    Full rollup for one (serial, date) UTC window.
+
+    `latest_daily_report` — the existing daily report row for this
+    window, if one exists. UI uses it to link into the report viewer.
+    """
+
+    serial_number: str
+    date: str  # YYYY-MM-DD (UTC)
+    window_start_utc: str
+    window_end_utc: str
+
+    events: list[TrailerDayEvent] = Field(default_factory=list)
+    images: list[TrailerDayImage] = Field(default_factory=list)
+    summaries: list[TrailerDaySummary] = Field(default_factory=list)
+    per_camera: list[TrailerDayPerCamera] = Field(default_factory=list)
+
+    event_count: int = 0
+    image_count: int = 0
+    summary_count: int = 0
+    camera_count: int = 0
+
+    latest_daily_report_id: str | None = None
+    latest_daily_report_status: str | None = None
+
+
+class ImageDetailResponse(BaseModel):
+    """One panoptic_images row — used by /v1/images/{id}."""
+
+    image_id: str
+    serial_number: str
+    camera_id: str
+    scope_id: str
+    trigger: str
+    bucket_start_utc: str | None = None
+    bucket_end_utc: str | None = None
+    captured_at_utc: str | None = None
+    caption_text: str | None = None
+    caption_status: str | None = None
+    storage_path: str | None = None
+    width: int | None = None
+    height: int | None = None
+    size_bytes: int | None = None
+    created_at: str | None = None
+
+
+class EventDetailResponse(BaseModel):
+    """One panoptic_events row — used by /v1/events/{id}."""
+
+    event_id: str
+    serial_number: str
+    camera_id: str
+    scope_id: str
+    event_type: str
+    event_source: str
+    severity: float | None = None
+    confidence: float | None = None
+    start_time_utc: str | None = None
+    end_time_utc: str | None = None
+    event_time_utc: str | None = None
+    bucket_id: str | None = None
+    image_id: str | None = None
+    title: str | None = None
+    description: str | None = None
+    metadata_json: dict = Field(default_factory=dict)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class SummaryDetailResponse(BaseModel):
+    """One panoptic_summaries row — used by /v1/summaries/{id}."""
+
+    summary_id: str
+    serial_number: str
+    level: str
+    scope_id: str
+    start_time: str | None = None
+    end_time: str | None = None
+    summary: str
+    key_events_labels: list[str] = Field(default_factory=list)
+    metrics: dict = Field(default_factory=dict)
+    coverage: dict = Field(default_factory=dict)
+    summary_mode: str | None = None
+    frames_used: int | None = None
+    confidence: float | None = None
+    model_profile: str | None = None
+    prompt_version: str | None = None
+    is_latest: bool | None = None
+    created_at: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Fleet overview
+# ---------------------------------------------------------------------------
+
+
+class FleetTrailer(BaseModel):
+    """One row of the fleet overview."""
+
+    serial_number: str
+    name: str | None = None
+    is_active: bool
+    # Most recent bucket / image timestamps (null if none)
+    last_bucket_start_utc: str | None = None
+    last_image_captured_at_utc: str | None = None
+    # Event count in the last 24 hours (rolling, computed at request time)
+    event_count_24h: int = 0
+    # Most recent successful daily report
+    latest_daily_report_id: str | None = None
+    latest_daily_report_window_start_utc: str | None = None
+    latest_daily_report_generated_at: str | None = None
+
+
+class FleetOverviewResponse(BaseModel):
+    trailers: list[FleetTrailer] = Field(default_factory=list)
+    count: int = 0
+    generated_at_utc: str

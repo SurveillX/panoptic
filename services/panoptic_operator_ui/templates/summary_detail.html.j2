@@ -1,0 +1,75 @@
+{% extends "base.html.j2" %}
+{% block title %}Summary {{ summary.summary_id[:12] }}… — Panoptic Operator{% endblock %}
+{% block content %}
+
+<section class="panel page-header">
+  <nav class="crumbs">
+    <a href="/">Fleet</a>
+    <span>/</span>
+    <a href="/trailer/{{ summary.serial_number }}/{{ day }}">{{ summary.serial_number }}</a>
+    <span>/</span>
+    <span>Summary</span>
+  </nav>
+  <h1>Summary <span class="muted">· {{ summary.level }}</span></h1>
+  <p class="muted small">
+    Summary ID: <code class="small">{{ summary.summary_id }}</code>
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Overview</h2>
+  <dl class="kv">
+    <dt>Serial</dt><dd><code>{{ summary.serial_number }}</code></dd>
+    <dt>Scope</dt><dd><code>{{ summary.scope_id }}</code></dd>
+    <dt>Level</dt><dd>{{ summary.level }}</dd>
+    <dt>Window (UTC)</dt><dd><code>{{ summary.start_time or "—" }}</code> → <code>{{ summary.end_time or "—" }}</code></dd>
+    <dt>Confidence</dt><dd>{% if summary.confidence is not none %}{{ "%.2f"|format(summary.confidence) }}{% else %}—{% endif %}</dd>
+    <dt>Mode</dt><dd>{{ summary.summary_mode or "—" }}{% if summary.frames_used is not none %} <span class="muted small">· {{ summary.frames_used }} frame(s)</span>{% endif %}</dd>
+    <dt>Model</dt><dd><code class="small">{{ summary.model_profile or "—" }}</code> <span class="muted small">· prompt {{ summary.prompt_version or "—" }}</span></dd>
+    <dt>Latest?</dt><dd>{{ "yes" if summary.is_latest else "no (superseded)" }}</dd>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2>Summary</h2>
+  {% if summary.summary %}
+    <p class="summary-body">{{ summary.summary }}</p>
+  {% else %}
+    <p class="empty-state">No summary text.</p>
+  {% endif %}
+</section>
+
+{% if summary.key_events_labels %}
+<section class="panel">
+  <h2>Signals</h2>
+  <ul class="tags">
+    {% for label in summary.key_events_labels %}
+      <li class="tag">{{ label }}</li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if summary.metrics %}
+<section class="panel">
+  <h2>Metrics</h2>
+  <pre class="json">{{ summary.metrics | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+
+{% if summary.coverage %}
+<section class="panel">
+  <h2>Coverage</h2>
+  <pre class="json">{{ summary.coverage | tojson(indent=2) }}</pre>
+</section>
+{% endif %}
+
+<section class="panel panel-muted">
+  <h2>Provenance</h2>
+  <p class="muted small">
+    Created <code>{{ summary.created_at or "—" }}</code>
+    · Open trailer day view: <a href="/trailer/{{ summary.serial_number }}/{{ day }}">{{ summary.serial_number }} / {{ day }}</a>
+  </p>
+</section>
+
+{% endblock %}

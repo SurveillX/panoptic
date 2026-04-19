@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Panoptic — Operator{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+<header class="site-header">
+  <div class="site-header-inner">
+    <a href="/" class="site-logo">Panoptic · Operator</a>
+    <nav class="site-nav">
+      <a href="/">Fleet</a>
+      <a href="/search">Search</a>
+    </nav>
+  </div>
+</header>
+
+<main class="site-main">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="site-footer">
+  Panoptic M10 · evidence-first operator UI · all times UTC unless noted.
+</footer>
+</body>
+</html>

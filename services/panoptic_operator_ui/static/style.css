@@ -1,0 +1,303 @@
+/*
+ * Panoptic Operator UI — functional CSS (M10).
+ * Desktop browser target. No design system; scanability over polish.
+ */
+
+:root {
+  --fg:       #1a1a1a;
+  --fg-muted: #555;
+  --fg-faint: #888;
+  --bg:       #ffffff;
+  --bg-alt:   #f7f7f7;
+  --border:   #e0e0e0;
+  --accent:   #2a5a8f;
+  --accent-hover: #18406b;
+
+  /* Event-type accent colors (subtle left borders, not decorative). */
+  --evt-alert:      #c62828;   /* red — human-triggered alert */
+  --evt-anomaly:    #d4760d;   /* amber — anomaly detector fired */
+  --evt-spike:      #7b1fa2;   /* purple — activity spike */
+  --evt-afterhours: #1565c0;   /* blue — after-hours activity */
+  --evt-default:    #777;
+
+  /* Trigger badge colors (image pane). */
+  --trg-alert:    #c62828;
+  --trg-anomaly:  #d4760d;
+  --trg-baseline: #888;
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg);
+  background: var(--bg);
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { color: var(--accent-hover); text-decoration: underline; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; background: var(--bg-alt); padding: 1px 4px; border-radius: 2px; }
+code.small { font-size: 0.8em; }
+.small { font-size: 0.85em; }
+.muted { color: var(--fg-muted); }
+.num   { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---------- Layout ---------- */
+.site-header {
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-alt);
+  position: sticky; top: 0; z-index: 10;
+}
+.site-header-inner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0.6em 1em;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.site-logo { font-weight: 600; color: var(--fg); }
+.site-nav a { margin-left: 1em; }
+.site-main { max-width: 1100px; margin: 1em auto; padding: 0 1em; }
+.site-footer {
+  max-width: 1100px;
+  margin: 2em auto 1em auto;
+  padding: 1em;
+  color: var(--fg-faint);
+  font-size: 0.85em;
+  border-top: 1px solid var(--border);
+}
+
+/* ---------- Panels ---------- */
+.panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1em 1.2em;
+  margin-bottom: 1em;
+}
+.panel-muted { background: var(--bg-alt); }
+.panel h1, .panel h2, .panel h3 { margin-top: 0; }
+.panel h1 { font-size: 1.3em; }
+.panel h2 { font-size: 1.05em; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.panel h3 { font-size: 0.95em; margin-top: 1em; }
+
+/* Page header / breadcrumbs / day nav. */
+.page-header h1 { margin-bottom: 0.2em; }
+.crumbs { font-size: 0.85em; color: var(--fg-faint); margin-bottom: 0.4em; }
+.crumbs a { color: var(--accent); }
+.crumbs span { margin: 0 0.4em; }
+.day-nav { margin-top: 0.4em; display: flex; gap: 1em; font-size: 0.9em; }
+
+/* ---------- Stats strip ---------- */
+.stats { list-style: none; padding: 0; margin: 0; display: flex; gap: 2em; }
+.stats li { display: flex; flex-direction: column; }
+.stat-num { font-size: 1.8em; font-weight: 600; line-height: 1.1; }
+.stat-label { color: var(--fg-muted); font-size: 0.85em; }
+
+/* ---------- Tables ---------- */
+table { border-collapse: collapse; width: 100%; font-size: 0.92em; }
+th, td { text-align: left; padding: 0.35em 0.6em; border-bottom: 1px solid var(--border); }
+th { background: var(--bg-alt); font-weight: 600; }
+tbody tr:hover { background: var(--bg-alt); }
+
+/* ---------- Events table with per-type accent ---------- */
+.events-table .evt { border-left: 3px solid var(--evt-default); }
+.events-table .evt td:first-child { padding-left: 0.8em; }
+.evt-alert_created       { border-left-color: var(--evt-alert)      !important; }
+.evt-anomaly_detected    { border-left-color: var(--evt-anomaly)    !important; }
+.evt-activity_spike      { border-left-color: var(--evt-spike)      !important; }
+.evt-after_hours_activity{ border-left-color: var(--evt-afterhours) !important; }
+.tt-time { white-space: nowrap; }
+
+/* ---------- Images grid ---------- */
+.images { display: flex; flex-wrap: wrap; gap: 0.8em; margin-top: 0.6em; }
+.images figure { margin: 0; width: 180px; font-size: 0.8em; color: var(--fg-muted); }
+.images img {
+  width: 180px; height: 120px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  display: block;
+}
+.images figcaption { margin-top: 0.2em; line-height: 1.35; }
+.images .caption-text { color: var(--fg); margin-top: 0.2em; font-size: 0.95em; }
+
+/* Trigger badges. */
+.trg {
+  display: inline-block;
+  padding: 0 0.4em;
+  border-radius: 2px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+.trg-alert    { background: var(--trg-alert); }
+.trg-anomaly  { background: var(--trg-anomaly); }
+.trg-baseline { background: var(--trg-baseline); }
+
+/* ---------- Summary list ---------- */
+.summary-list { list-style: none; padding: 0; margin: 0; }
+.summary-list li { border-bottom: 1px solid var(--border); padding: 0.6em 0; }
+.summary-list li:last-child { border-bottom: none; }
+.summary-body { margin-top: 0.3em; color: var(--fg); }
+
+/* ---------- Report-history panel ---------- */
+.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; }
+.report-list { list-style: none; padding: 0; margin: 0; }
+.report-list li { padding: 0.25em 0; border-bottom: 1px dashed var(--border); }
+.report-list li:last-child { border-bottom: none; }
+
+/* ---------- Empty states ---------- */
+.empty-state {
+  color: var(--fg-faint);
+  font-style: italic;
+  padding: 0.6em 0;
+}
+
+/* ---------- Forms (fleet placeholder) ---------- */
+fieldset { border: 1px solid var(--border); padding: 0.8em; border-radius: 4px; max-width: 520px; }
+fieldset label { display: block; margin-bottom: 0.4em; }
+fieldset input { padding: 0.3em 0.5em; border: 1px solid var(--border); border-radius: 2px; font-size: 1em; }
+fieldset button {
+  padding: 0.4em 1em;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 0.95em;
+}
+fieldset button:hover { background: var(--accent-hover); }
+
+/* ---------- Utility button ---------- */
+.btn {
+  display: inline-block;
+  padding: 0.2em 0.7em;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 2px;
+  font-size: 0.9em;
+}
+.btn:hover { background: var(--accent-hover); color: #fff; text-decoration: none; }
+
+/* ---------- Fleet table ---------- */
+.fleet-table td:first-child code { font-weight: 600; }
+
+/* ---------- Search form ---------- */
+.search-form { margin-top: 0.8em; }
+.search-form-row {
+  display: flex;
+  gap: 0.8em;
+  align-items: flex-end;
+  margin-bottom: 0.6em;
+  flex-wrap: wrap;
+}
+.search-form label { display: flex; flex-direction: column; font-size: 0.85em; color: var(--fg-muted); }
+.search-form label.grow { flex: 1 1 300px; }
+.search-form input[type="text"],
+.search-form input[type="number"] {
+  padding: 0.35em 0.5em;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-size: 1em;
+  min-width: 8em;
+}
+.search-form input[type="text"].grow { min-width: 20em; }
+.search-form fieldset.inline {
+  display: flex;
+  gap: 0.8em;
+  align-items: center;
+  padding: 0.3em 0.6em;
+  margin: 0;
+}
+.search-form fieldset.inline legend { padding: 0 0.3em; font-size: 0.8em; color: var(--fg-muted); }
+.search-form .cb {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.9em;
+  color: var(--fg);
+}
+.search-form button {
+  padding: 0.45em 1.2em;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 0.95em;
+}
+.search-form button:hover { background: var(--accent-hover); }
+
+/* ---------- Detail page components ---------- */
+dl.kv {
+  display: grid;
+  grid-template-columns: 180px 1fr;
+  gap: 0.3em 1em;
+  margin: 0;
+}
+dl.kv dt { color: var(--fg-muted); font-weight: 600; font-size: 0.9em; }
+dl.kv dd { margin: 0; }
+
+.tag {
+  display: inline-block;
+  padding: 0.1em 0.5em;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--fg);
+}
+/* Event-type tag coloring — match the event row borders. */
+.tag.evt-alert_created        { border-left: 3px solid var(--evt-alert); }
+.tag.evt-anomaly_detected     { border-left: 3px solid var(--evt-anomaly); }
+.tag.evt-activity_spike       { border-left: 3px solid var(--evt-spike); }
+.tag.evt-after_hours_activity { border-left: 3px solid var(--evt-afterhours); }
+
+ul.tags { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.4em; }
+ul.tags .tag { padding: 0.15em 0.6em; }
+
+pre.json {
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 0.6em 0.8em;
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
+/* Image detail */
+.image-detail-panel { text-align: center; }
+.image-detail-wrap { max-width: 900px; margin: 0 auto; }
+.image-detail-img {
+  max-width: 100%;
+  max-height: 680px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  display: block;
+  margin: 0 auto;
+}
+
+/* Report viewer iframe */
+.report-viewer-panel { padding: 0; }
+.report-frame {
+  width: 100%;
+  min-height: 70vh;
+  border: none;
+  display: block;
+}
+
+/* Inline action forms (generate-report button). */
+.inline-form {
+  display: flex;
+  align-items: center;
+  gap: 0.8em;
+  margin-top: 0.6em;
+}
+.inline-form .btn { border: none; cursor: pointer; padding: 0.3em 0.9em; font-size: 0.9em; }

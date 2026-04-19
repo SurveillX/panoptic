@@ -1,13 +1,14 @@
 name: panoptic
 
-# Containerized Panoptic app stack — webhook, 9 workers, reclaimer, and
-# the Search API. Each worker is a separate service so restarts are
-# surgical (tmux-dev.sh and this file are 1:1).
+# Containerized Panoptic app stack — webhook, 9 workers, reclaimer,
+# Search API, and the M10 operator UI. Each worker is a separate
+# service so restarts are surgical (tmux-dev.sh and this file are 1:1).
 #
 # Networking: host mode. The workers already talk to panoptic-store,
 # panoptic-vllm, and panoptic-retrieval over localhost. Host mode keeps
 # the existing .env URLs working unchanged. Each worker binds a unique
-# /healthz port (8201-8208, 8210, 8100, 8600) so there are no collisions.
+# /healthz port (8201-8208, 8210, 8100, 8400, 8600) so there are no
+# collisions.
 #
 # Depends on: panoptic-store (postgres/qdrant/redis) + panoptic-vllm +
 # panoptic-retrieval all running on the host. Bring those up first.
@@ -166,10 +167,38 @@ services:
       retries: 3
       start_period: 20s
 
+  operator_ui:
+    <<: *worker-base
+    container_name: panoptic-operator-ui
+    command: python -m services.panoptic_operator_ui.server
+    # M10 — HTML surface for human operators. Calls search_api over
+    # loopback HTTP via SEARCH_API_URL (host network mode; defaults to
+    # http://localhost:8600).
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sSf http://localhost:8400/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
   search_api:
     <<: *worker-base
     container_name: panoptic-search-api
     command: python -m services.search_api.server
+    # M10 added a read-only mount of the reports tree so the M9 viewer
+    # endpoint (/v1/reports/{id}/view) can stream stored HTML inside an
+    # iframe.
+    #
+    # SECURITY NOTE — the Search API (:8600) is an internal-only trust
+    # boundary. It is not tunneled through Caddy/FRP today, and it must
+    # not be until a stronger auth model lands. /v1/images/{id}.jpg and
+    # /v1/reports/{id}/view both serve bytes from these mounted paths
+    # with no per-user auth. See docs/OPERATOR_UI.md §Access and
+    # docs/REPORTS.md §Access.
+    volumes:
+      - .:/app:ro
+      - /data/panoptic-store/images:/data/panoptic-store/images:ro
+      - /data/panoptic-store/reports:/data/panoptic-store/reports:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -sSf http://localhost:8600/health || exit 1"]
       interval: 30s

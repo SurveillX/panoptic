@@ -1,0 +1,215 @@
+{% extends "base.html.j2" %}
+{% block title %}{{ day_data.serial_number }} · {{ day_data.date }} — Panoptic Operator{% endblock %}
+
+{% block content %}
+<section class="panel page-header">
+  <nav class="crumbs">
+    <a href="/">Fleet</a>
+    <span>/</span>
+    <span>{{ day_data.serial_number }}</span>
+    <span>/</span>
+    <span>{{ day_data.date }}</span>
+  </nav>
+  <h1>{{ day_data.serial_number }} — {{ day_data.date }}</h1>
+  <p class="muted">
+    Window: <code>{{ day_data.window_start_utc }}</code> → <code>{{ day_data.window_end_utc }}</code>
+  </p>
+  <nav class="day-nav">
+    {% if prev_day %}
+      <a href="/trailer/{{ day_data.serial_number }}/{{ prev_day }}">← {{ prev_day }}</a>
+    {% endif %}
+    {% if next_day %}
+      <a href="/trailer/{{ day_data.serial_number }}/{{ next_day }}">{{ next_day }} →</a>
+    {% endif %}
+  </nav>
+</section>
+
+<section class="panel stats-panel">
+  <h2>At a glance</h2>
+  <ul class="stats">
+    <li><span class="stat-num">{{ day_data.event_count }}</span><span class="stat-label">events</span></li>
+    <li><span class="stat-num">{{ day_data.image_count }}</span><span class="stat-label">images</span></li>
+    <li><span class="stat-num">{{ day_data.summary_count }}</span><span class="stat-label">summaries</span></li>
+    <li><span class="stat-num">{{ day_data.camera_count }}</span><span class="stat-label">cameras</span></li>
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Daily report</h2>
+  {% if day_data.latest_daily_report_id %}
+    <p>
+      Status: <strong>{{ day_data.latest_daily_report_status }}</strong>
+      · <a href="/reports/{{ day_data.latest_daily_report_id }}/view" class="btn">Open report</a>
+      · <code class="small">{{ day_data.latest_daily_report_id[:16] }}…</code>
+    </p>
+    {% if day_data.latest_daily_report_status != "success" %}
+      <form action="/trailer/{{ day_data.serial_number }}/{{ day_data.date }}/generate-report" method="post" class="inline-form">
+        <button type="submit" class="btn">Regenerate</button>
+        <span class="muted small">
+          Re-enqueues the report. Running / pending jobs short-circuit — safe to click.
+        </span>
+      </form>
+    {% endif %}
+  {% else %}
+    <p class="empty-state">No daily report has been generated for this day yet.</p>
+    <form action="/trailer/{{ day_data.serial_number }}/{{ day_data.date }}/generate-report" method="post" class="inline-form">
+      <button type="submit" class="btn">Generate daily report</button>
+      <span class="muted small">
+        Enqueues a job on the report_generator worker. Refresh after ~15s to see the result.
+      </span>
+    </form>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Recent reports</h2>
+  {% if report_history.daily or report_history.weekly %}
+    <div class="two-col">
+      <div>
+        <h3>Daily (last 5)</h3>
+        {% if report_history.daily %}
+          <ul class="report-list">
+            {% for r in report_history.daily %}
+              <li>
+                <a href="/reports/{{ r.report_id }}/view">{{ r.window_start_utc[:10] }}</a>
+                <span class="muted small">
+                  · {{ r.status }}
+                  {% if r.generated_at %} · generated {{ r.generated_at[:19] }}Z{% endif %}
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="empty-state">No daily reports yet for this trailer.</p>
+        {% endif %}
+      </div>
+      <div>
+        <h3>Weekly (last 2)</h3>
+        {% if report_history.weekly %}
+          <ul class="report-list">
+            {% for r in report_history.weekly %}
+              <li>
+                <a href="/reports/{{ r.report_id }}/view">{{ r.window_start_utc[:10] }}</a>
+                <span class="muted small">
+                  · {{ r.status }}
+                  {% if r.generated_at %} · generated {{ r.generated_at[:19] }}Z{% endif %}
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="empty-state">No weekly reports yet for this trailer.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% else %}
+    <p class="empty-state">No reports have been generated for this trailer yet.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Events ({{ day_data.event_count }})</h2>
+  {% if day_data.events %}
+    <table class="events-table">
+      <thead>
+        <tr>
+          <th>When (UTC)</th>
+          <th>Type</th>
+          <th>Camera</th>
+          <th>Severity</th>
+          <th>Title / description</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ev in day_data.events %}
+          <tr class="evt evt-{{ ev.event_type }} src-{{ ev.event_source }}">
+            <td class="tt-time"><code>{{ ev.event_time_utc or "" }}</code></td>
+            <td>
+              <a href="/events/{{ ev.event_id }}">{{ ev.event_type }}</a>
+              <span class="muted small">· {{ ev.event_source }}</span>
+            </td>
+            <td>{{ ev.camera_id or "" }}</td>
+            <td class="num">{% if ev.severity is not none %}{{ "%.2f"|format(ev.severity) }}{% else %}—{% endif %}</td>
+            <td>{{ ev.title or "" }}{% if ev.description %} — {{ ev.description }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty-state">No events recorded for this day.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Images ({{ day_data.image_count }})</h2>
+  {% if day_data.images %}
+    <div class="images">
+      {% for img in day_data.images %}
+        <figure>
+          <a href="/images/{{ img.image_id }}">
+            <img src="{{ search_api_url }}/v1/images/{{ img.image_id }}.jpg" alt="{{ img.image_id[:12] }}" loading="lazy">
+          </a>
+          <figcaption>
+            <span class="trg trg-{{ img.trigger }}">{{ img.trigger or "?" }}</span>
+            <span class="muted small">{{ img.captured_at or img.bucket_start or "" }}</span>
+            {% if img.camera_id %}<span class="muted small">· {{ img.camera_id }}</span>{% endif %}
+            <div class="caption-text">{{ img.caption_text or "(no caption)" }}</div>
+          </figcaption>
+        </figure>
+      {% endfor %}
+    </div>
+  {% else %}
+    <p class="empty-state">No images captured for this day.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Per-camera</h2>
+  {% if day_data.per_camera %}
+    <table>
+      <thead>
+        <tr>
+          <th>Camera</th>
+          <th>Events</th>
+          <th>Images</th>
+          <th>Summaries</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for cam in day_data.per_camera %}
+          <tr>
+            <td>{{ cam.camera_id }}</td>
+            <td class="num">{{ cam.event_count }}</td>
+            <td class="num">{{ cam.image_count }}</td>
+            <td class="num">{{ cam.summary_count }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="empty-state">No cameras had activity on this day.</p>
+  {% endif %}
+</section>
+
+<section class="panel">
+  <h2>Summaries ({{ day_data.summary_count }})</h2>
+  {% if day_data.summaries %}
+    <ul class="summary-list">
+      {% for s in day_data.summaries %}
+        <li>
+          <a href="/summaries/{{ s.summary_id }}"><code class="small">{{ s.summary_id[:16] }}…</code></a>
+          <span class="muted small">
+            · {{ s.level or "?" }}
+            · {{ s.camera_id or "?" }}
+            · {{ s.start_time or "" }}
+            {% if s.confidence is not none %} · conf={{ "%.2f"|format(s.confidence) }}{% endif %}
+          </span>
+          <div class="summary-body">{{ s.summary or "(no text)" }}</div>
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty-state">No summaries recorded for this day.</p>
+  {% endif %}
+</section>
+{% endblock %}

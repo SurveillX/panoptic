@@ -1,0 +1,28 @@
+{% extends "base.html.j2" %}
+{% block title %}Fleet — Panoptic Operator{% endblock %}
+{% block content %}
+  <section class="panel">
+    <h1>Fleet</h1>
+    <p class="muted">
+      The fleet overview page arrives in M10 P10.3. For now, navigate directly:
+    </p>
+    <form action="" method="get"
+          onsubmit="event.preventDefault();
+                   var sn = this.serial.value.trim();
+                   var d = this.day.value;
+                   if (sn && d) { window.location = '/trailer/' + encodeURIComponent(sn) + '/' + encodeURIComponent(d); }">
+      <fieldset>
+        <legend>Go to trailer day</legend>
+        <label>
+          Serial
+          <input type="text" name="serial" placeholder="YARD-A-001" required>
+        </label>
+        <label>
+          Date (UTC)
+          <input type="date" name="day" required>
+        </label>
+        <button type="submit">Open</button>
+      </fieldset>
+    </form>
+  </section>
+{% endblock %}

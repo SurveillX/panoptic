@@ -29,12 +29,22 @@ from shared.utils.redis_client import get_redis_client
 
 from .executor import execute_search
 from .period_summary import run_period_summary
+from .details import (
+    get_event_detail,
+    get_image_asset,
+    get_image_detail,
+    get_summary_detail,
+)
+from .fleet import get_fleet_overview
 from .reports import (
     generate_daily_report,
     generate_weekly_report,
     get_report_asset,
     get_report_status,
+    get_report_view,
+    list_reports,
 )
+from .trailer_day import get_trailer_day
 from .schemas import PeriodSummarizeRequest, SearchRequest, VerifyRequest
 from .verify import run_verification
 
@@ -140,6 +150,10 @@ def create_app(
     def reports_weekly(request: Request, body: dict):
         return generate_weekly_report(engine, _redis, body)
 
+    @app.get("/v1/reports")
+    def reports_list(serial_number: str | None = None, kind: str | None = None, limit: int = 10):
+        return list_reports(engine, serial_number=serial_number, kind=kind, limit=limit)
+
     @app.get("/v1/reports/{report_id}")
     def reports_status(report_id: str):
         return get_report_status(engine, report_id)
@@ -147,5 +161,41 @@ def create_app(
     @app.get("/v1/reports/{report_id}/assets/{image_id}.jpg")
     def reports_asset(report_id: str, image_id: str):
         return get_report_asset(engine, report_id, image_id)
+
+    # ------------------------------------------------------------------
+    # M10 — operator UI read endpoints (P10.1a first batch)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/trailer/{serial_number}/day/{day}")
+    def trailer_day(serial_number: str, day: str):
+        return get_trailer_day(engine, serial_number, day)
+
+    @app.get("/v1/reports/{report_id}/view")
+    def reports_view(report_id: str):
+        return get_report_view(engine, report_id)
+
+    @app.get("/v1/images/{image_id}.jpg")
+    def image_asset(image_id: str):
+        return get_image_asset(engine, image_id)
+
+    # ------------------------------------------------------------------
+    # M10 P10.1b — fleet overview + evidence detail endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/fleet/overview")
+    def fleet_overview():
+        return get_fleet_overview(engine)
+
+    @app.get("/v1/events/{event_id}")
+    def event_detail(event_id: str):
+        return get_event_detail(engine, event_id)
+
+    @app.get("/v1/summaries/{summary_id}")
+    def summary_detail(summary_id: str):
+        return get_summary_detail(engine, summary_id)
+
+    @app.get("/v1/images/{image_id}")
+    def image_detail(image_id: str):
+        return get_image_detail(engine, image_id)
 
     return app

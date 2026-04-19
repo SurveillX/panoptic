@@ -1,4 +1,4 @@
-# Panoptic — System Status (2026-04-19, refresh #4)
+# Panoptic — System Status (2026-04-19, refresh #5)
 
 Briefing document for external AI collaborators and future-self sessions.
 Self-contained.
@@ -70,7 +70,7 @@ Image files: `/data/panoptic-store/images/<serial>/<camera>/<yyyy>/<mm>/<dd>/<im
 | `panoptic-qdrant` | 6333 / 6334 | Qdrant v1.13.6 |
 | `panoptic-redis` | 6379 | Redis 7 |
 
-### 4.2 Application processes (tmux session `panoptic`, **11 windows**)
+### 4.2 Application processes (tmux session `panoptic`, **12 windows**)
 
 | Window | Port | Role |
 |---|---|---|
@@ -84,7 +84,8 @@ Image files: `/data/panoptic-store/images/<serial>/<camera>/<yyyy>/<mm>/<dd>/<im
 | `event_producer` | 8207 | **image/bucket → `panoptic_events` rows (M8)** |
 | `report_gen` | 8208 | **daily/weekly HTML reports (M9)** |
 | `reclaimer` | 8210 | Lease expiry recovery + stream re-enqueue (30 s tick) |
-| `search` | 8600 | Search API (hybrid retrieval: caption + VL, M9 report endpoints) |
+| `search` | 8600 | Search API (hybrid retrieval + M9 reports + M10 trailer-day/fleet/detail endpoints) |
+| `operator_ui` | 8400 | **Operator evidence browser — HTML surface over Search API (M10)** |
 
 Start/observe: `cd ~/panoptic && ./scripts/tmux-dev.sh` then
 `tmux a -t panoptic`.
@@ -131,6 +132,7 @@ Alembic at migration **010**.
 | M7 | Containerize workers | ✅ done — `docker compose up -d` brings up the 11-service stack (M9 added report_generator), all healthy, end-to-end push + search verified through containers |
 | M8 | Unified event layer (panoptic_events + producer worker) | ✅ done — 58/58 image triggers + 105/105 bucket markers converted; Search API + period summary both cite real event_ids; backfill is zero-insert on rerun |
 | M9 | Async report generation (daily + weekly HTML) | ✅ done — `POST /v1/reports/{daily,weekly}` enqueue via new `panoptic_report_generator` worker; content-addressed report_ids; authorized asset endpoint; weekly aggregation SQL tables + per-day narrative roll-up; 90-day on-disk retention; cron entries documented in `docs/REPORTS.md` |
+| M10 | Operator evidence browser UI | ✅ done — new `panoptic_operator_ui` service (12th, `:8400`) over 9 new read-only Search API endpoints; HTMX + Jinja2; pages: fleet, trailer-day, search (URL-driven), report viewer (iframe), event/summary/image detail; explicit empty states; "Generate daily report" button wires through to the M9 worker; access model documented in `docs/OPERATOR_UI.md` |
 
 ---
 
@@ -324,6 +326,74 @@ rows (small; preserve history). Policy + cron entries in
 content-addressed `report_id`. Bumping the template regenerates in
 place, no new row.
 
+### 6.11 M10 — operator evidence browser UI
+
+New `panoptic_operator_ui` service (12th, health port `:8400`,
+`/healthz` on the same port). Thin HTML surface consuming the Search
+API over loopback HTTP. No Postgres, no Redis, no DB access from the
+UI layer — every read goes through `services/panoptic_operator_ui/client.py`.
+
+**Stack:** FastAPI + Jinja2 + HTMX (vendored 1.9.12) + minimal CSS.
+No build step, no SPA, no `node_modules`. Each page is a real URL.
+
+**Pages shipped (all `http://localhost:8400/...`):**
+- `/` — fleet overview: 10 active trailers with last-seen + 24h event
+  count + latest daily report link
+- `/trailer/{serial}/{yyyy-mm-dd}` — single-page rollup for one trailer
+  on one UTC day: daily report status/link, report-history panel
+  (5 daily + 2 weekly), event list with per-type color classes,
+  deduped image thumbnails, per-camera mini-table, summary list,
+  "Generate daily report" button (POST → 303 back to the page)
+- `/search?q=...&type=event&serial=...` — URL-driven search; query +
+  filters in the URL so results are shareable; grouped event/image/
+  summary results; graceful-degrade when a semantic type is selected
+  without a query
+- `/reports/{id}/view` — iframe wrapping the stored M9 HTML (served
+  by `search_api` directly so the report's internal asset URLs
+  resolve against `:8600`)
+- `/events/{id}`, `/summaries/{id}`, `/images/{id}` — evidence detail
+  pages; all fall through to a clean 404 template on unknown IDs
+
+**New Search API endpoints added for M10 (read-only JSON unless noted):**
+- `GET /v1/trailer/{serial}/day/{yyyy-mm-dd}` — composite rollup; reuses
+  `shared/report/synthesis` helpers for byte-equivalent fetch semantics
+- `GET /v1/fleet/overview` — single CTE query over trailers + buckets +
+  images + events + reports
+- `GET /v1/events/{id}`, `/v1/summaries/{id}`, `/v1/images/{id}` —
+  single-row detail endpoints; 404 on unknown IDs
+- `GET /v1/images/{id}.jpg` — streams image bytes (no cited-id check,
+  unlike the M9 report-asset endpoint)
+- `GET /v1/reports/{id}/view` — streams stored HTML for iframe
+  embedding (required adding a `/data/panoptic-store/reports:ro`
+  mount to `search_api`)
+- `GET /v1/reports?serial_number=&kind=&limit=` — report-history
+  listing for the UI panel
+
+**Bugfix during M10:** `get_report_view` originally passed `filename=`
+to `FileResponse`, which set `content-disposition: attachment` — this
+would cause browsers to download the report instead of rendering it in
+the iframe. Dropped the `filename=` arg so `content-disposition` is
+absent and the HTML renders inline.
+
+**Second bugfix:** the `/search` handler's `type: list[str]` parameter
+silently failed to bind because `type` shadows a Python builtin.
+Switched to `Query(alias="type")` binding to `rt` — URL stays
+`?type=...` for shareability, Python variable is clean.
+
+**Access model (internal-only, documented in `docs/OPERATOR_UI.md`):**
+- `:8400` (UI) and `:8600` (Search API) are both internal-only; **no
+  public tunnel**, no per-user auth.
+- `GET /v1/images/{id}.jpg` has no cited-id check — it's the broadest
+  new data-access vector in M10. Must not be tunneled without
+  landing auth first.
+- Only `:8100` (webhook) is publicly tunneled today, and that enforces
+  HMAC. Docker-compose carries a multi-line security comment on the
+  `search_api` service reinforcing this at config-time.
+
+**Explicit out-of-scope for v1:** per-user auth, chat/agent, PDF,
+email/Slack, cross-trailer charts, mobile layout, branded styling.
+These are M11+ concerns.
+
 ---
 
 ## 7. Known Gaps (Current)
@@ -351,20 +421,20 @@ cd ~/panoptic-store && docker compose up -d
 # GPU services
 cd ~/panoptic-retrieval && docker compose up -d
 cd ~/panoptic-vllm && docker compose up -d
-# Application (11 containers — M7 + M8 event_producer + M9 report_generator)
+# Application (12 containers — M7 base + M8 event_producer + M9 report_generator + M10 operator_ui)
 cd ~/panoptic && docker compose up -d
 # Ingress tunnel
 sudo systemctl start frpc
 ```
 
 Dev-only alternative: `cd ~/panoptic && ./scripts/tmux-dev.sh` runs the
-11 workers directly in a tmux session using the host venv. Don't run
+12 workers directly in a tmux session using the host venv. Don't run
 both — they collide on ports.
 
 ### Status
 
 ```bash
-~/panoptic/scripts/dashboard.sh              # all 11 workers + containers + disk
+~/panoptic/scripts/dashboard.sh              # all 12 workers + containers + disk
 ~/panoptic/scripts/watch_trailer.sh <serial> # live per-trailer view
 ```
 
@@ -444,6 +514,17 @@ curl -sSf http://localhost:8600/v1/reports/<report_id> | jq .
 
 Cron entries in `docs/REPORTS.md`.
 
+### Operator UI (M10)
+
+```bash
+# Start the UI — same as any other service
+docker compose up -d operator_ui
+# Open a trailer day view
+open http://localhost:8400/trailer/YARD-A-001/2026-04-18
+```
+
+Fleet / search / detail pages documented in `docs/OPERATOR_UI.md`.
+
 ### Live smoke
 
 ```bash
@@ -493,8 +574,8 @@ fe3e9b5 chore: .gitignore + .env.example + stale vlm model refs
 
 ## 10. What the Next Session Should Pick Up
 
-M1–M5 + M7 + M8 + M9 are all done. The remaining roadmap items plus
-the known operational gaps:
+M1–M5 + M7 + M8 + M9 + M10 are all done. The remaining roadmap items
+plus the known operational gaps:
 
 **Off-box backup (top of list):**
 - Set up SSH key from Spark → DO gateway droplet (user action).
@@ -532,10 +613,16 @@ useful. M9.1 candidates (all explicitly deferred): verify-integration
 on headlines, PDF export, email/Slack delivery, branded styling,
 on-the-fly missing-day synthesis in weekly.
 
-**M10 — operator evidence browser (next milestone):**
-Thin web UI over the existing APIs. See planning doc — not yet
-detailed-planned, will need its own kickoff doc once M9 has some live
-data to render against.
+**M10 — operator evidence browser (✅ done):**
+New `panoptic_operator_ui` service + 9 new Search API endpoints.
+See §6.11 and `docs/OPERATOR_UI.md`. Pick up next with: install the
+report-generation cron from M9 for real traffic; field-test with an
+actual operator to identify which UI gaps hurt most; then M11.
+
+**M11 — agent layer (next milestone):**
+Tool wrappers over the Search API endpoints the UI already uses.
+Should be relatively small — the endpoints are stable and
+agent-friendly. Kickoff plan needed before implementation.
 
 **Optional — VL rerank A/B:**
 - Hand-label ~20 real-trailer queries with ground-truth relevant images.
