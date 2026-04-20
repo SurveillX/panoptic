@@ -315,6 +315,56 @@ def scenario_after_hours(
     return buckets
 
 
+def scenario_drop_midday(
+    serial_number: str, camera_id: str,
+    base_utc: datetime, hours: int,
+) -> list[dict]:
+    """
+    Daytime activity collapse scenario for the M12 `drop` marker.
+
+    Generates a steady daytime baseline then drops to zero for a single
+    midday bucket. No markers are hand-injected — the bucket stream is
+    fed through ingest_bucket() and derivation is expected to fire
+    `drop` automatically once the rolling baseline satisfies the
+    sample-size and mean floors (_DROP_MIN_ROLLING_SAMPLE = 16,
+    _DROP_MIN_ROLLING_MEAN = 5.0).
+
+    Shape:
+      hours 0..N-2 : steady moderate-high activity (builds rolling history)
+      hour  N-1    : one zero-detection quarter at 12:00 UTC; remaining
+                     three quarters continue the steady pattern so only
+                     the single target bucket should fire the marker.
+    """
+    if hours < 5:
+        hours = 5
+    buckets: list[dict] = []
+    start_day = base_utc.replace(hour=8, minute=0, second=0, microsecond=0)
+
+    for h in range(hours):
+        hour_start = start_day + timedelta(hours=h)
+        for q in range(4):
+            start = hour_start + timedelta(minutes=q * 15)
+            end = start + timedelta(minutes=15)
+            is_target = (h == hours - 1 and q == 0)
+            if is_target:
+                mc, sd, dc, td = 0.0, 0.0, 0.0, 0
+                oc = {"person": 0, "vehicle": 0}
+            else:
+                mc = round(random.uniform(6.0, 10.0), 2)
+                sd = round(random.uniform(1.5, 3.0), 2)
+                dc = round(random.uniform(0.7, 0.9), 2)
+                td = int(mc * 15)
+                oc = {"person": random.randint(4, 10), "vehicle": random.randint(1, 3)}
+            buckets.append(_build_bucket(
+                serial_number, camera_id, start, end,
+                object_counts=oc,
+                cognia_stats=_cognia_stats(mc, sd, dc, td),
+                event_markers=[],                           # derivation decides
+                completeness=_default_completeness(),
+            ))
+    return buckets
+
+
 def scenario_after_hours_drop(
     serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
@@ -613,6 +663,7 @@ SCENARIOS = {
     "anomaly":           scenario_anomaly,
     "after_hours":       scenario_after_hours,
     "after_hours_drop":  scenario_after_hours_drop,
+    "drop_midday":       scenario_drop_midday,
     "workday":           scenario_workday,
 }
 

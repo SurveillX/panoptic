@@ -156,9 +156,67 @@ def derive_history_markers(
 
     markers: list[dict] = []
 
-    # P12b: drop
+    drop = _derive_drop(
+        total_detections=total_detections,
+        bucket_start=bucket_start,
+        history=history,
+    )
+    if drop is not None:
+        markers.append(drop)
+
     # P12c: start
     # P12d: late_start
     # P12e: underperforming (conditional — Mode-1 FP gate)
 
     return markers
+
+
+def _derive_drop(
+    *,
+    total_detections: int,
+    bucket_start: datetime,
+    history: BucketHistory,
+) -> dict | None:
+    """
+    Fire `drop` when the current bucket's total_detections collapses below
+    the camera's rolling baseline during daytime hours.
+
+    Guards:
+      - rolling_bucket_sample_size  >= _DROP_MIN_ROLLING_SAMPLE     (thin history → no fire)
+      - rolling_mean_total_detections >= _DROP_MIN_ROLLING_MEAN     (always-dead cam → no fire)
+      - bucket_start.hour in daytime window                         (after_hours covers night)
+      - total_detections < max(1, mean - _DROP_SIGMA * std)         (sharp drop required)
+
+    Confidence scales with magnitude of the drop relative to σ:
+        clamp((mean - current) / (std + 1), 0, 1)
+    """
+    if history.rolling_bucket_sample_size < _DROP_MIN_ROLLING_SAMPLE:
+        return None
+    if history.rolling_mean_total_detections < _DROP_MIN_ROLLING_MEAN:
+        return None
+
+    # Daytime-only — the inverse of the after_hours window so a bucket is
+    # covered by exactly one "quiet-shaped" marker type at any given hour.
+    hour = bucket_start.hour
+    if hour < _AFTER_HOURS_END_HOUR or hour >= _AFTER_HOURS_START_HOUR:
+        return None
+
+    threshold = max(
+        1.0,
+        history.rolling_mean_total_detections
+        - _DROP_SIGMA * history.rolling_std_total_detections,
+    )
+    if total_detections >= threshold:
+        return None
+
+    raw = (
+        history.rolling_mean_total_detections - float(total_detections)
+    ) / (history.rolling_std_total_detections + 1.0)
+    confidence = max(0.0, min(1.0, raw))
+
+    return {
+        "ts":         bucket_start.isoformat(),
+        "event_type": MARKER_DROP,
+        "label":      "activity_drop",
+        "confidence": confidence,
+    }

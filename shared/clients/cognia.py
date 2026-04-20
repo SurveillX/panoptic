@@ -224,7 +224,11 @@ def ingest_bucket(
                 key = (m.get("event_type"), m.get("ts"))
                 if key in existing:
                     continue
-                bucket.event_markers.append(EventMarker.model_validate(m))
+                # derive_history_markers emits ts as an ISO string (same shape
+                # as derive_markers). EventMarker's model is strict=True, so
+                # explicitly allow string→datetime coercion here — matches the
+                # strict=False used for BucketRecord validation at ingress.
+                bucket.event_markers.append(EventMarker.model_validate(m, strict=False))
                 existing.add(key)
 
         # Step 4: Upsert panoptic_buckets.

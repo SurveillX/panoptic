@@ -17,6 +17,7 @@ import pytest
 
 from shared.signals.derive import (
     MARKER_AFTER_HOURS,
+    MARKER_DROP,
     MARKER_SPIKE,
     derive_history_markers,
     derive_markers,
@@ -63,32 +64,19 @@ def _active_history(
 
 
 # ---------------------------------------------------------------------------
-# P12a — skeleton: derive_history_markers always returns [] until P12b lands.
+# derive_history_markers — contract tests
 # ---------------------------------------------------------------------------
 
 
-class TestDeriveHistoryMarkersSkeleton:
-    """P12a groundwork — derive_history_markers accepts the full input
-    surface and returns an empty list. Per-marker tests replace these
-    cases as each phase lands."""
-
+class TestDeriveHistoryMarkersContract:
     def test_empty_history_returns_empty(self):
+        """Thin / empty history is never a signal — every marker's
+        sample-size guard must short-circuit."""
         result = derive_history_markers(
             total_detections=0,
             bucket_start=datetime(2026, 4, 20, 12, 0, tzinfo=UTC),
             bucket_minutes=15,
             history=_empty_history(),
-        )
-        assert result == []
-
-    def test_active_history_returns_empty(self):
-        # Even with plausible history + a dramatic drop, no marker is
-        # emitted because P12a has no per-marker logic yet.
-        result = derive_history_markers(
-            total_detections=1,
-            bucket_start=datetime(2026, 4, 20, 12, 0, tzinfo=UTC),
-            bucket_minutes=15,
-            history=_active_history(),
         )
         assert result == []
 
@@ -102,6 +90,138 @@ class TestDeriveHistoryMarkersSkeleton:
             history=_active_history(),
         )
         assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# P12b — drop marker
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveDrop:
+    """drop fires when an active-baseline camera collapses to near-zero
+    detections during daytime hours."""
+
+    _MIDDAY = datetime(2026, 4, 20, 14, 0, tzinfo=UTC)
+
+    def _drop_of(self, markers: list[dict]) -> dict | None:
+        matches = [m for m in markers if m["event_type"] == MARKER_DROP]
+        return matches[0] if matches else None
+
+    def test_fires_on_sharp_drop(self):
+        # mean=100, std=30 → threshold = 100 - 2*30 = 40; current=1 < 40
+        markers = derive_history_markers(
+            total_detections=1,
+            bucket_start=self._MIDDAY,
+            bucket_minutes=15,
+            history=_active_history(mean=100.0, std=30.0, n=96),
+        )
+        drop = self._drop_of(markers)
+        assert drop is not None
+        assert drop["event_type"] == MARKER_DROP
+        assert drop["label"] == "activity_drop"
+        assert drop["ts"] == self._MIDDAY.isoformat()
+
+    def test_confidence_in_unit_interval(self):
+        # Severe drop: current=0, mean=100, std=30 → raw = 100/31 ≈ 3.2,
+        # clamped to 1.0. The formula saturates on large drops — acceptable;
+        # severity ordering between hard drops isn't meaningful.
+        markers = derive_history_markers(
+            total_detections=0,
+            bucket_start=self._MIDDAY,
+            bucket_minutes=15,
+            history=_active_history(mean=100.0, std=30.0, n=96),
+        )
+        drop = self._drop_of(markers)
+        assert drop is not None
+        assert 0.0 <= drop["confidence"] <= 1.0
+
+    def test_confidence_reflects_sub_saturation_gap(self):
+        # Keep the gap small enough that clamping isn't hit: with mean=50
+        # and std=50, raw ≈ (50 - current) / 51; at current=20 raw ≈ 0.59.
+        history = _active_history(mean=50.0, std=50.0, n=96)
+        # threshold = max(1, 50 - 100) = 1 — drop fires for 0 only.
+        # Pick parameters where the formula is in its linear regime by
+        # hand-crafting: mean=30, std=50, threshold=max(1, -70)=1.
+        history = _active_history(mean=30.0, std=50.0, n=96)
+        markers = derive_history_markers(
+            total_detections=0,
+            bucket_start=self._MIDDAY,
+            bucket_minutes=15,
+            history=history,
+        )
+        drop = self._drop_of(markers)
+        assert drop is not None
+        # raw = (30 - 0) / (50 + 1) ≈ 0.588 — in the linear regime.
+        assert drop["confidence"] == pytest.approx(30.0 / 51.0, abs=1e-3)
+
+    def test_suppressed_when_current_above_threshold(self):
+        # mean=100, std=30, threshold=40; current=60 ≥ 40 → no fire.
+        markers = derive_history_markers(
+            total_detections=60,
+            bucket_start=self._MIDDAY,
+            bucket_minutes=15,
+            history=_active_history(mean=100.0, std=30.0, n=96),
+        )
+        assert self._drop_of(markers) is None
+
+    def test_suppressed_thin_history(self):
+        # < _DROP_MIN_ROLLING_SAMPLE (16) buckets of history — not enough
+        # to reason about a drop.
+        markers = derive_history_markers(
+            total_detections=1,
+            bucket_start=self._MIDDAY,
+            bucket_minutes=15,
+            history=_active_history(mean=100.0, std=30.0, n=10),
+        )
+        assert self._drop_of(markers) is None
+
+    def test_suppressed_always_dead_camera(self):
+        # Rolling mean below the noise-floor — this camera never has
+        # much activity; a bucket with 0 detections isn't a "drop".
+        markers = derive_history_markers(
+            total_detections=0,
+            bucket_start=self._MIDDAY,
+            bucket_minutes=15,
+            history=_active_history(mean=2.0, std=1.0, n=96),
+        )
+        assert self._drop_of(markers) is None
+
+    def test_suppressed_after_hours(self):
+        # At night the after_hours marker is the meaningful signal;
+        # drop is daytime-only so the two never overlap on the same bucket.
+        night = datetime(2026, 4, 20, 23, 0, tzinfo=UTC)
+        markers = derive_history_markers(
+            total_detections=1,
+            bucket_start=night,
+            bucket_minutes=15,
+            history=_active_history(mean=100.0, std=30.0, n=96),
+        )
+        assert self._drop_of(markers) is None
+
+    def test_suppressed_pre_dawn(self):
+        # Same daytime-gate applies to early morning.
+        dawn = datetime(2026, 4, 20, 5, 0, tzinfo=UTC)
+        markers = derive_history_markers(
+            total_detections=1,
+            bucket_start=dawn,
+            bucket_minutes=15,
+            history=_active_history(mean=100.0, std=30.0, n=96),
+        )
+        assert self._drop_of(markers) is None
+
+    def test_floor_threshold_never_below_one(self):
+        # When mean - 2σ ≤ 0, threshold floors at 1: drop still fires for
+        # zero detections (but not for 1+, which meets the floor).
+        history = _active_history(mean=5.0, std=3.0, n=96)
+        # mean - 2σ = -1, floored to 1
+        assert self._drop_of(derive_history_markers(
+            total_detections=0, bucket_start=self._MIDDAY,
+            bucket_minutes=15, history=history,
+        )) is not None
+        assert self._drop_of(derive_history_markers(
+            total_detections=1, bucket_start=self._MIDDAY,
+            bucket_minutes=15, history=history,
+        )) is None
 
 
 # ---------------------------------------------------------------------------
