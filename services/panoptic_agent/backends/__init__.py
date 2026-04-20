@@ -23,6 +23,8 @@ import logging
 import os
 
 from .base import Backend, BackendRegistry
+from .claude import ClaudeBackend
+from .openai import OpenAIBackend
 from .vllm import VLLMBackend
 
 log = logging.getLogger(__name__)
@@ -55,12 +57,13 @@ def build_registry() -> BackendRegistry:
         if key == "gemma":
             registry.add(VLLMBackend())
         elif key == "claude":
-            # P11.1b will drop the ClaudeBackend import + register it
-            # here. For now, flag it as not-yet-implemented so the
-            # config isn't silent.
-            log.info("backend 'claude' configured but adapter not yet shipped (P11.1b)")
+            # ClaudeBackend self-reports unavailable when
+            # ANTHROPIC_API_KEY is absent. We register it either way so
+            # /v1/agent/backends can show operators what's configured
+            # vs what's live.
+            registry.add(ClaudeBackend())
         elif key == "gpt5mini":
-            log.info("backend 'gpt5mini' configured but adapter not yet shipped (P11.1c)")
+            registry.add(OpenAIBackend())
         else:
             log.warning("backend %r in AGENT_BACKENDS_ENABLED is unknown — ignoring", key)
 
@@ -80,4 +83,11 @@ def build_registry() -> BackendRegistry:
     return registry
 
 
-__all__ = ["Backend", "BackendRegistry", "VLLMBackend", "build_registry"]
+__all__ = [
+    "Backend",
+    "BackendRegistry",
+    "VLLMBackend",
+    "ClaudeBackend",
+    "OpenAIBackend",
+    "build_registry",
+]
