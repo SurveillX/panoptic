@@ -152,12 +152,31 @@ class OpenAIBackend(Backend):
 
         t0 = time.perf_counter()
         try:
-            resp = self._client.chat.completions.create(
-                model=self.model,
-                messages=oai_messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            )
+            # Newer OpenAI reasoning models (o1, gpt-5, etc.) require
+            # `max_completion_tokens` instead of the legacy `max_tokens`
+            # and only accept the default temperature. We pick the
+            # request shape based on the model family so the adapter
+            # works across gpt-4o / o1 / gpt-5 without per-call
+            # configuration.
+            req_kwargs: dict = {
+                "model":    self.model,
+                "messages": oai_messages,
+            }
+            if _uses_completion_tokens(self.model):
+                # Reasoning-family models (o1/o3/gpt-5) consume
+                # `max_completion_tokens` on invisible reasoning tokens
+                # BEFORE producing visible output. A 1024 per-turn
+                # budget gets entirely absorbed by reasoning, so the
+                # model hits the cap with no answer emitted. Give
+                # reasoning models ~4x headroom so visible JSON has
+                # room to land.
+                req_kwargs["max_completion_tokens"] = max(max_tokens * 4, 4096)
+                # reasoning models only accept default temperature;
+                # don't send it.
+            else:
+                req_kwargs["max_tokens"] = max_tokens
+                req_kwargs["temperature"] = temperature
+            resp = self._client.chat.completions.create(**req_kwargs)
         except Exception as exc:
             code = getattr(exc, "status_code", 0) or 0
             body_preview = f"{type(exc).__name__}: {exc!s}"[:400]
@@ -197,6 +216,19 @@ class OpenAIBackend(Backend):
         msg = getattr(first, "message", None)
         content = getattr(msg, "content", "") if msg is not None else ""
         return content or ""
+
+
+def _uses_completion_tokens(model: str) -> bool:
+    """Return True for reasoning-family models that require the newer
+    `max_completion_tokens` parameter and only accept the default
+    temperature. Covers o1, o3, gpt-5 families; other models keep
+    the legacy `max_tokens` + configurable temperature."""
+    m = model.lower()
+    return (
+        m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("gpt-5")
+    )
 
 
 def _normalize_finish_reason(raw: str | None) -> StopReason:
