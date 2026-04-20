@@ -315,6 +315,62 @@ def scenario_after_hours(
     return buckets
 
 
+def scenario_start_of_day(
+    serial_number: str, camera_id: str,
+    base_utc: datetime, hours: int,
+) -> list[dict]:
+    """
+    Day-start scenario for the M12 `start` marker.
+
+    Emits a long quiet stretch (zero detections) followed by one
+    meaningful-activity bucket, all within the same UTC day. The
+    quiet run must be ≥ 120 min to satisfy _START_MIN_QUIET_MINUTES;
+    this scenario generates a full pre-dawn quiet period so the
+    first active bucket at ~06:00 UTC fires start exactly once.
+
+    The `hours` argument caps the total run span; we always emit
+    at least 3h of pre-start quiet + 3h of post-start activity so
+    the guard conditions are satisfied.
+    """
+    buckets: list[dict] = []
+    # Anchor the scenario at UTC midnight of the base day so the
+    # first-active-today gate lines up with a clean calendar day.
+    day = base_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    quiet_hours = 3                                         # pre-activity silence
+    active_hours = max(3, hours - quiet_hours)              # post-start activity
+
+    for h in range(quiet_hours):
+        hour_start = day + timedelta(hours=h)
+        for q in range(4):
+            start = hour_start + timedelta(minutes=q * 15)
+            end = start + timedelta(minutes=15)
+            buckets.append(_build_bucket(
+                serial_number, camera_id, start, end,
+                object_counts={},
+                cognia_stats=_cognia_stats(0.0, 0.0, 0.0, 0),
+                event_markers=[],
+                completeness=_default_completeness(),
+            ))
+
+    for h in range(active_hours):
+        hour_start = day + timedelta(hours=quiet_hours + h)
+        for q in range(4):
+            start = hour_start + timedelta(minutes=q * 15)
+            end = start + timedelta(minutes=15)
+            mc = round(random.uniform(5.0, 8.0), 2)
+            sd = round(random.uniform(1.0, 2.0), 2)
+            dc = round(random.uniform(0.6, 0.85), 2)
+            td = int(mc * 15)
+            buckets.append(_build_bucket(
+                serial_number, camera_id, start, end,
+                object_counts={"person": random.randint(3, 7), "vehicle": random.randint(0, 2)},
+                cognia_stats=_cognia_stats(mc, sd, dc, td),
+                event_markers=[],
+                completeness=_default_completeness(),
+            ))
+    return buckets
+
+
 def scenario_drop_midday(
     serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
@@ -664,6 +720,7 @@ SCENARIOS = {
     "after_hours":       scenario_after_hours,
     "after_hours_drop":  scenario_after_hours_drop,
     "drop_midday":       scenario_drop_midday,
+    "start_of_day":      scenario_start_of_day,
     "workday":           scenario_workday,
 }
 

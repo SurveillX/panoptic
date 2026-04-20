@@ -164,7 +164,14 @@ def derive_history_markers(
     if drop is not None:
         markers.append(drop)
 
-    # P12c: start
+    start = _derive_start(
+        total_detections=total_detections,
+        bucket_start=bucket_start,
+        history=history,
+    )
+    if start is not None:
+        markers.append(start)
+
     # P12d: late_start
     # P12e: underperforming (conditional — Mode-1 FP gate)
 
@@ -219,4 +226,38 @@ def _derive_drop(
         "event_type": MARKER_DROP,
         "label":      "activity_drop",
         "confidence": confidence,
+    }
+
+
+def _derive_start(
+    *,
+    total_detections: int,
+    bucket_start: datetime,
+    history: BucketHistory,
+) -> dict | None:
+    """
+    Fire `start` on the first meaningful-activity bucket of the UTC day
+    for this camera, provided the preceding stretch was sustained-quiet.
+
+    Guards:
+      - recent_quiet_run_minutes >= _START_MIN_QUIET_MINUTES  (≥ 2h trailing quiet)
+      - total_detections >= _START_MIN_DETECTIONS             (not tree-shadow noise)
+      - first_active_bucket_start_today is None               (first active bucket today)
+
+    Label matches the summary agent's dormant branch ("start of
+    activity"). Confidence is fixed at 0.9 — low-entropy event; there
+    isn't a useful gradient to convey.
+    """
+    if history.recent_quiet_run_minutes < _START_MIN_QUIET_MINUTES:
+        return None
+    if total_detections < _START_MIN_DETECTIONS:
+        return None
+    if history.first_active_bucket_start_today is not None:
+        return None
+
+    return {
+        "ts":         bucket_start.isoformat(),
+        "event_type": MARKER_START,
+        "label":      "start of activity",
+        "confidence": 0.9,
     }

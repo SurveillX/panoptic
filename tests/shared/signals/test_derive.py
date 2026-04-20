@@ -19,6 +19,7 @@ from shared.signals.derive import (
     MARKER_AFTER_HOURS,
     MARKER_DROP,
     MARKER_SPIKE,
+    MARKER_START,
     derive_history_markers,
     derive_markers,
 )
@@ -222,6 +223,94 @@ class TestDeriveDrop:
             total_detections=1, bucket_start=self._MIDDAY,
             bucket_minutes=15, history=history,
         )) is None
+
+
+# ---------------------------------------------------------------------------
+# P12c — start marker
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveStart:
+    """start fires on the first active bucket of the UTC day after a
+    sustained-quiet tail — the "work has begun today" signal."""
+
+    _MORNING = datetime(2026, 4, 20, 7, 0, tzinfo=UTC)
+
+    def _start_of(self, markers: list[dict]) -> dict | None:
+        matches = [m for m in markers if m["event_type"] == MARKER_START]
+        return matches[0] if matches else None
+
+    def test_fires_after_sustained_quiet(self):
+        # 2h quiet (120 min) + no prior active bucket today + 10 detections.
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=self._MORNING,
+            bucket_minutes=15,
+            history=_active_history(quiet_minutes=120, first_today=None),
+        )
+        start = self._start_of(markers)
+        assert start is not None
+        assert start["event_type"] == MARKER_START
+        assert start["label"] == "start of activity"
+        assert start["confidence"] == pytest.approx(0.9)
+        assert start["ts"] == self._MORNING.isoformat()
+
+    def test_suppressed_when_quiet_run_too_short(self):
+        # 90 min quiet < 120 floor — natural lulls shouldn't trigger start.
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=self._MORNING,
+            bucket_minutes=15,
+            history=_active_history(quiet_minutes=90, first_today=None),
+        )
+        assert self._start_of(markers) is None
+
+    def test_suppressed_when_already_active_today(self):
+        # If this camera already had an active bucket earlier today, the
+        # first-of-day gate blocks a second start marker.
+        earlier = datetime(2026, 4, 20, 5, 0, tzinfo=UTC)
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=self._MORNING,
+            bucket_minutes=15,
+            history=_active_history(quiet_minutes=120, first_today=earlier),
+        )
+        assert self._start_of(markers) is None
+
+    def test_suppressed_when_detections_below_noise_floor(self):
+        # 4 detections → likely tree shadow / wildlife. Skip.
+        markers = derive_history_markers(
+            total_detections=4,
+            bucket_start=self._MORNING,
+            bucket_minutes=15,
+            history=_active_history(quiet_minutes=120, first_today=None),
+        )
+        assert self._start_of(markers) is None
+
+    def test_exactly_at_quiet_floor_fires(self):
+        # Boundary: exactly 120 min quiet must fire.
+        markers = derive_history_markers(
+            total_detections=5,
+            bucket_start=self._MORNING,
+            bucket_minutes=15,
+            history=_active_history(quiet_minutes=120, first_today=None),
+        )
+        assert self._start_of(markers) is not None
+
+    def test_start_and_drop_do_not_co_fire(self):
+        # A bucket that qualifies for start (lots of detections after a
+        # quiet tail) cannot also be a drop — drop requires current <<
+        # mean, but here current is the FIRST active bucket so current
+        # meets or exceeds the baseline floor. Guards itself.
+        markers = derive_history_markers(
+            total_detections=50,
+            bucket_start=self._MORNING,
+            bucket_minutes=15,
+            history=_active_history(quiet_minutes=120, first_today=None, mean=5.0, std=2.0),
+        )
+        drop = [m for m in markers if m["event_type"] == MARKER_DROP]
+        start = [m for m in markers if m["event_type"] == MARKER_START]
+        assert start and not drop
 
 
 # ---------------------------------------------------------------------------
