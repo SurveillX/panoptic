@@ -35,17 +35,25 @@ from datetime import datetime
 from typing import Any
 
 from shared.schemas.event import (
+    EVENT_TYPE_ACTIVITY_DROP,
     EVENT_TYPE_ACTIVITY_SPIKE,
+    EVENT_TYPE_ACTIVITY_START,
     EVENT_TYPE_AFTER_HOURS,
     EVENT_TYPE_ALERT_CREATED,
     EVENT_TYPE_ANOMALY_DETECTED,
+    EVENT_TYPE_LATE_START,
+    EVENT_TYPE_UNDERPERFORMING,
 )
 
 
 # Marker-key (from shared/signals/derive) → canonical event_type on the event row.
 _MARKER_TO_EVENT_TYPE: dict[str, str] = {
-    "spike": EVENT_TYPE_ACTIVITY_SPIKE,
-    "after_hours": EVENT_TYPE_AFTER_HOURS,
+    "spike":           EVENT_TYPE_ACTIVITY_SPIKE,
+    "after_hours":     EVENT_TYPE_AFTER_HOURS,
+    "drop":            EVENT_TYPE_ACTIVITY_DROP,
+    "start":           EVENT_TYPE_ACTIVITY_START,
+    "late_start":      EVENT_TYPE_LATE_START,
+    "underperforming": EVENT_TYPE_UNDERPERFORMING,
 }
 
 # Image trigger → canonical event_type. 'baseline' never produces an event.

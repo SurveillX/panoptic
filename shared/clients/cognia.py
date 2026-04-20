@@ -41,8 +41,10 @@ import redis
 from pydantic import ValidationError
 from sqlalchemy import text
 
-from shared.schemas.bucket import BucketRecord, generate_bucket_id
+from shared.schemas.bucket import BucketRecord, EventMarker, generate_bucket_id
 from shared.schemas.job import make_bucket_summary_key, make_event_produce_bucket_key
+from shared.signals.derive import derive_history_markers
+from shared.signals.history import fetch_bucket_history
 from shared.utils.activity import (
     ActivityComponents,
     CameraStats,
@@ -184,6 +186,46 @@ def ingest_bucket(
             activity_score = _raw_activity_score(
                 bucket.activity_components, stream_coverage_ok=stream_ok
             )
+
+        # Step 3b (M12): history-based markers.
+        #
+        # Fragment-based markers (spike, after_hours) are already present on
+        # bucket.event_markers from transform_to_bucket_record. History-
+        # based markers (drop, start, late_start, underperforming) need DB
+        # access, so they're derived here and merged. Re-derivation is
+        # intentionally cheap — two small queries per ingest — and keeps
+        # the derivation pure over (aggregate, history) inputs.
+        history = fetch_bucket_history(
+            conn,
+            serial_number=bucket.serial_number,
+            camera_id=bucket.camera_id,
+            bucket_start=bucket.bucket_start_utc,
+        )
+        bucket_minutes = int(
+            (bucket.bucket_end_utc - bucket.bucket_start_utc).total_seconds() // 60
+        ) or 15
+        history_markers = derive_history_markers(
+            total_detections=int(
+                bucket.activity_components.get("object_count_total", 0)
+            ),
+            bucket_start=bucket.bucket_start_utc,
+            bucket_minutes=bucket_minutes,
+            history=history,
+        )
+        if history_markers:
+            # Dedup on (event_type, ts) to stay idempotent across replays.
+            # Existing markers are EventMarker instances; history_markers are
+            # plain dicts shaped for pydantic validation.
+            existing = {
+                (m.event_type, m.ts.isoformat())
+                for m in (bucket.event_markers or [])
+            }
+            for m in history_markers:
+                key = (m.get("event_type"), m.get("ts"))
+                if key in existing:
+                    continue
+                bucket.event_markers.append(EventMarker.model_validate(m))
+                existing.add(key)
 
         # Step 4: Upsert panoptic_buckets.
         # late_finalized overwrites all fields — the bucket arrived late but

@@ -70,7 +70,14 @@ _INSERT_SQL = text("""
 """)
 
 
-_KNOWN_MARKER_KEYS = frozenset({"spike", "after_hours"})
+_KNOWN_MARKER_KEYS = frozenset({
+    "spike",
+    "after_hours",
+    "drop",
+    "start",
+    "late_start",
+    "underperforming",
+})
 
 
 def backfill_images(engine, *, serial: str | None, apply: bool, limit: int | None) -> tuple[int, int]:

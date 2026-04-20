@@ -221,7 +221,14 @@ def _produce_from_bucket(conn, payload: dict, engine: Engine) -> JobState:
 
 
 # Known marker keys — matches shared/signals/derive.py. Extend together.
-_KNOWN_MARKER_KEYS = frozenset({"spike", "after_hours"})
+_KNOWN_MARKER_KEYS = frozenset({
+    "spike",
+    "after_hours",
+    "drop",
+    "start",
+    "late_start",
+    "underperforming",
+})
 
 
 # ---------------------------------------------------------------------------

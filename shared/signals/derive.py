@@ -1,18 +1,25 @@
 """
 Shared marker derivation.
 
-Single source of truth for converting a finalized bucket's fragments into
-event markers. Called from:
+Single source of truth for converting finalized bucket data into event
+markers. Two entry points:
 
-  - shared/clients/trailer_intake.py (during bucket finalization) to populate
-    panoptic_buckets.event_markers
-  - the event_producer worker / backfill (via shared/events/build.py) to
-    convert bucket rows into panoptic_events rows
+  derive_markers(fragments, bucket_start)
+      Fragment-dependent markers that can be computed without DB access
+      (spike, after_hours). Called from trailer_intake during transform.
 
-Only two marker types are produced today: `spike` and `after_hours`. The
-summary agent has consumer branches for `drop`, `start`, `late_start`, and
-`underperforming` that remain dormant until derivation logic is added in a
-follow-on phase (see plan D-1c).
+  derive_history_markers(*, total_detections, bucket_start, bucket_minutes,
+                          history)
+      History-dependent markers (drop, start, late_start, underperforming).
+      Called from shared.clients.cognia.ingest_bucket after BucketHistory
+      is fetched. Derivation operates on aggregate inputs — fragments are
+      no longer available at this point.
+
+Markers from both paths merge into panoptic_buckets.event_markers and
+flow through shared/events/build.build_event_row_from_bucket_marker into
+panoptic_events.
+
+All thresholds live in this module. Consumers see labels, not numbers.
 """
 
 from __future__ import annotations
@@ -20,16 +27,55 @@ from __future__ import annotations
 from datetime import datetime
 
 from shared.schemas.trailer_webhook import TrailerBucketData
+from shared.signals.history import BucketHistory
 
 
-# Canonical event_type labels emitted into bucket.event_markers and, after
-# mapping in shared/events/build.py, into panoptic_events.event_type.
+# ---------------------------------------------------------------------------
+# Marker keys — must match shared/events/build._MARKER_TO_EVENT_TYPE.
+# ---------------------------------------------------------------------------
+
 MARKER_SPIKE = "spike"
 MARKER_AFTER_HOURS = "after_hours"
+MARKER_DROP = "drop"
+MARKER_START = "start"
+MARKER_LATE_START = "late_start"
+MARKER_UNDERPERFORMING = "underperforming"
+
+
+# ---------------------------------------------------------------------------
+# Thresholds — fragment-based markers (spike, after_hours). Unchanged.
+# ---------------------------------------------------------------------------
 
 _SPIKE_ANOMALY_THRESHOLD = 0.7
 _AFTER_HOURS_START_HOUR = 21  # UTC — inclusive
 _AFTER_HOURS_END_HOUR = 6     # UTC — exclusive
+
+
+# ---------------------------------------------------------------------------
+# Thresholds — history-based markers. Every constant named; docs/M12.md
+# "tuning knobs" section references these by name.
+# ---------------------------------------------------------------------------
+
+# drop — activity collapse
+_DROP_MIN_ROLLING_SAMPLE = 16          # ≥ 4h of history at 15-min cadence
+_DROP_MIN_ROLLING_MEAN = 5.0           # camera must have a real baseline
+_DROP_SIGMA = 2.0                      # current < mean - 2σ
+
+# start — first meaningful activity after sustained quiet
+_START_MIN_QUIET_MINUTES = 120         # ≥ 2h sustained-quiet tail
+_START_MIN_DETECTIONS = 5              # meaningful, not tree-shadow noise
+
+# late_start — delayed day-start vs. camera's norm
+_LATE_START_MIN_DAYS_WITH_ACTIVITY = 5 # stable baseline floor
+_LATE_START_HOUR_DELAY_THRESHOLD = 2   # ≥ 2h later than typical first hour
+_LATE_START_MIN_DETECTIONS = 5
+
+# underperforming — active but well below norm
+_UNDERPERFORMING_MIN_ROLLING_SAMPLE = 40    # ≥ 10h of history
+_UNDERPERFORMING_MIN_ROLLING_MEAN = 10.0    # tighter than drop
+_UNDERPERFORMING_SIGMA = 1.5                # looser cutoff — sustained-low signal
+_UNDERPERFORMING_WARMUP_MINUTES = 30        # skip natural ramp-up
+_UNDERPERFORMING_ACTIVE_WINDOW_HOURS = 10   # hours after typical_first_active_hour
 
 
 def derive_markers(
@@ -75,5 +121,44 @@ def derive_markers(
             "label": "after hours activity",
             "confidence": 0.9,
         })
+
+    return markers
+
+
+# ---------------------------------------------------------------------------
+# History-based derivation
+# ---------------------------------------------------------------------------
+
+
+def derive_history_markers(
+    *,
+    total_detections: int,
+    bucket_start: datetime,
+    bucket_minutes: int,
+    history: BucketHistory,
+) -> list[dict]:
+    """
+    Derive history-dependent markers from aggregate bucket inputs + a
+    BucketHistory snapshot.
+
+    Returns a list of marker dicts shaped like `derive_markers`' output:
+        {"ts": iso8601, "event_type": str, "label": str, "confidence": float}
+
+    The caller merges the returned list with fragment-based markers into
+    `panoptic_buckets.event_markers`. Each per-marker helper is enabled
+    phase-by-phase (M12 plan P12b → P12e); this function returns an empty
+    list until the first phase lands.
+
+    `bucket_minutes` is carried through so per-marker logic can convert
+    between minute-valued thresholds and bucket counts without hard-
+    coding 15-minute cadence.
+    """
+
+    markers: list[dict] = []
+
+    # P12b: drop
+    # P12c: start
+    # P12d: late_start
+    # P12e: underperforming (conditional — Mode-1 FP gate)
 
     return markers
