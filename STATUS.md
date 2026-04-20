@@ -136,6 +136,7 @@ Alembic at migration **010**.
 | M10 | Operator evidence browser UI | ✅ done — new `panoptic_operator_ui` service (12th, `:8400`) over 9 new read-only Search API endpoints; HTMX + Jinja2; pages: fleet, trailer-day, search (URL-driven), report viewer (iframe), event/summary/image detail; explicit empty states; "Generate daily report" button wires through to the M9 worker; access model documented in `docs/OPERATOR_UI.md` |
 | M11 | Task-oriented agent layer | ✅ done — new `panoptic_agent` service (13th, `:8500`) runs a prompt-driven tool-use loop. 11 tools wrap existing Search API endpoints; grounded structured answers with evidence-first citations; `"Ask about this day"` panel on the trailer-day page; seed-question harness baseline 7/9 PASS on local Gemma. Access model + guardrails in `docs/AGENT.md` |
 | M11.1 | Multi-backend agent | ✅ done — request-facing keys `gemma`/`claude`/`gpt5mini` dispatch to VLLMBackend/ClaudeBackend/OpenAIBackend via a small Backend protocol. `POST /v1/agent/ask` gains optional `backend` field; new `GET /v1/agent/backends` exposes availability + pricing; trace gains `provider` + `backend_latency_ms` + `estimated_cost_usd` + `backend_error`; runner.py gains `--backend` + `--compare` + `--csv-out` for cross-backend A/B. Hosted adapters dormant until their API key is set. Prompt-driven parity across all three backends preserved for apples-to-apples benchmarking. |
+| M12 | Expanded bucket-marker derivation | ✅ done (3 of 4) — adds `drop` + `start` + `late_start` to the derivation vocabulary alongside existing `spike` + `after_hours`. New `shared/signals/history.py` fetches three explicit baselines (rolling-bucket, same-day, day-level); `derive_history_markers` runs inside `ingest_bucket` with a `produce` filter so production ships a safe subset. All thresholds centralized in `shared/signals/derive.py`. `scripts/rederive_markers.py` provides the Mode-1 dry-run + Mode-2 additive-apply rederive path (never overwrites existing markers; idempotent). Dormant summary-agent branches for new markers light up automatically. UTC-day handling documented as explicit v1 compromise in `docs/M12.md`. `underperforming` implemented but held behind the production gate — Mode-1 dry-run against yard data was degenerate (bursty baselines suppress the marker); deferred to M12.1 pending broader data. |
 
 ---
 
@@ -528,6 +529,121 @@ cleanly without their API keys — they register as
 
 **New deps:** `anthropic>=0.40`, `openai>=1.40` in `pyproject.toml`.
 
+### 6.15 M12 — expanded bucket-marker derivation
+
+Panoptic was deriving only two markers at bucket finalization
+(`spike`, `after_hours`). Every downstream consumer — summary agent
+branches, Search API filter surface, event-producer mapping, report
+prose, event-type constants — had been wired for a larger vocabulary
+but the derivation logic itself was missing. M12 writes that
+derivation and lights up three new markers end-to-end:
+
+| Marker | Event type | Fires when |
+|---|---|---|
+| `drop` | `activity_drop` | Daytime bucket collapses below a stable baseline (`mean − 2σ ≥ 1`; suppresses for bursty cameras where the signal would be noise) |
+| `start` | `activity_start` | First active bucket of the UTC day after a sustained-quiet tail (≥ 2h) |
+| `late_start` | `late_start` | Today's first active bucket is ≥ 2h past the camera's typical first-active hour (14-day UTC baseline, ≥ 5 real work days) |
+
+**Architecture.** A new `shared/signals/history.py` fetches a
+`BucketHistory` with three explicit baselines that downstream guards
+check independently:
+
+- rolling-bucket stats over the last 96 buckets (drop / underperforming)
+- same-day context: first-active-bucket-of-day + elapsed-minutes-since
+  last-active (time-based, not count-based — works under sparse
+  histories / late-arriving buckets)
+- 14-day day-level: typical first-active hour + count of days with
+  real activity (not just calendar days)
+
+`derive_history_markers` runs inside `ingest_bucket` after
+`fetch_bucket_history`, producing aggregate-input markers that
+merge into `panoptic_buckets.event_markers` alongside the
+fragment-based markers already produced by `transform_to_bucket_record`.
+Dedup on `(event_type, ts)` keeps the combined list idempotent under
+replay. All strict-past-only queries — rederivation over historical
+buckets can't leak future data.
+
+**Production gate.** `derive_history_markers` takes a
+`produce: frozenset[str]` filter. Production callers use
+`PRODUCED_HISTORY_MARKERS = {drop, start, late_start}`;
+`IMPLEMENTED_HISTORY_MARKERS` adds `underperforming` for Mode-1
+evaluation only. Flipping `underperforming` on is a one-line change
+once its FP gate clears.
+
+**Thresholds all centralized** in `shared/signals/derive.py` as
+named constants — consumers see labels, not numbers. `docs/M12.md`
+publishes the full tuning-knob catalog.
+
+**Mode-1 rederive** (`scripts/rederive_markers.py`): evaluates
+candidate markers against historical buckets without writing
+anything. Emits a per-bucket diff JSONL plus a human summary with
+per-marker totals, per-camera histograms, and FP-gate checks keyed
+to the plan's §5a. Mode 2 (`--apply-new`) appends new-family markers
+to existing `event_markers` lists additively — never overwrites or
+deletes. Mode 3 (`--overwrite-all`) is a stub that refuses to run
+in M12 (reserved for a future release that retunes `spike` or
+`after_hours`).
+
+**Drop threshold tightening — the key M12 correctness fix.** The
+first yard dry-run fired drop on 34% of buckets because yard cameras
+are bursty (mean=709, std=2513 → `mean − 2σ` was ≈ -4317, originally
+floored to 1, so every zero-detection daytime bucket fired). The
+fix: require `mean − 2σ ≥ 1` to fire, otherwise suppress. After
+the fix: 0 drop fires on yard (every yard camera is too bursty for
+drop to be meaningful). That's correct — drop is the right signal
+for steady-activity cameras (indoor production lines, attended
+desks), not bursty surveillance. Drop's unit tests + replay
+(`scripts/replay_buckets.py --scenario drop_midday`) cover the
+signal mechanically; yard data just doesn't activate it.
+
+**`underperforming` deferred to M12.1.** The Mode-1 dry-run on 1108
+yard buckets (3 days, 10 cameras) showed `drop=0` AND
+`underperforming=0` — same bursty-baseline suppression. The plan's
+FP gate (`underperforming ≤ 4× drop`) is degenerate when both are
+zero, so there's no signal to accept or reject the marker. Rather
+than ship blind, the marker is held behind the production gate
+until there's broader data (longer history, less-bursty cameras) to
+validate thresholds against. `docs/M12.md` documents the one-line
+change to flip it on once the gate clears.
+
+**UTC-day compromise.** Day-level comparisons (`first_active_today`,
+`typical_first_active_hour_utc`) are UTC-based in M12. For
+US-Eastern sites consistent and reasonable; for distant time zones
+produces edge-case markers near local midnight. **Explicit v1
+compromise**, not a footnote — documented as a Known Limitation in
+`docs/M12.md`. Per-serial time-zone handling is the first M12.1
+candidate.
+
+**Consumer paths — everything lit up for free.** No changes needed
+in summary agent (dormant branches at
+`services/panoptic_summary_agent/executor.py:205-231, 448-476`
+for all four types), Search API (open `event_type` filter), report
+generator (events flow untyped), or agent layer (routes through
+Search). Operator UI got three new CSS color vars
+(`--evt-drop`, `--evt-start`, `--evt-latestart`) + matching
+`.evt-activity_drop` / `.evt-activity_start` / `.evt-late_start`
+classes so the new markers render colored chips instead of gray
+fallback.
+
+**No migrations.** `event_markers` is JSONB with no enum constraint.
+`panoptic_events.event_type` is TEXT. Event-type constants were
+already declared in `shared/schemas/event.py`. M12 adds zero schema
+changes.
+
+**Tests:** 39 unit tests in `tests/shared/signals/test_derive.py`
+covering contract, spike, after_hours, drop (including bursty-
+baseline suppression), start, late_start, and underperforming.
+Three new replay scenarios (`drop_midday`, `start_of_day`,
+`late_start_by_3h`) exercise each marker end-to-end through
+`ingest_bucket`.
+
+**Phased delivery:**
+- P12a `318af2e` — BucketHistory + fetcher + allowlists + wiring
+- P12b `b69acc9` — drop marker + EventMarker strict=False fix
+- P12c `fe85489` — start marker
+- P12d `ffa6177` — late_start marker + time-based quiet-run refactor
+- P12f/P12e-eval `3a8e352` — Mode-1 rederive + drop tightening + underperforming deferral
+
 ---
 
 ## 7. Known Gaps (Current)
@@ -536,7 +652,7 @@ cleanly without their API keys — they register as
 |---|---|---|
 | Off-box backup target not wired | medium | Backups live on the same disk as primary data. Needs SSH setup from Bryan to the DO gateway (or to a second box post-M6). See `docs/RESTORE.md` §Off-box backup. |
 | No active paging on health_watch alerts | medium | Alerts go to stdout → cron `logs/cron.log`. No push (email/slack/pagerduty). Will mail via MAILTO env if user configures it. |
-| Four bucket-marker types not derived | low | `drop`, `start`, `late_start`, `underperforming` are referenced by the summary agent's consumer branches but no derivation logic produces them (M8 D-1c). Branches fire only when derivation lands. |
+| `underperforming` marker held behind the production gate | low | Implementation lives in `shared/signals/derive._derive_underperforming`; not in `PRODUCED_HISTORY_MARKERS`. Mode-1 dry-run on yard was degenerate (bursty baselines suppress the marker; FP gate `≤ 4× drop` is undefined when both are zero). Deferred to M12.1 pending broader data — rerun `scripts/rederive_markers.py` once there's sufficient history depth and/or less-bursty cameras, then flip the one-liner in derive.py. |
 | Real trailer has no alert/anomaly images yet | low | Trailer `1422725077375` has only baseline images so far (107, zero alerts/anomalies). We can't end-to-end test cross-source event cohesion until the anomaly detector fires. Raw camera_ids already match between payloads, so when the first alert does fire it should land on the existing bucket_marker scope_id automatically. |
 | Postgres/Qdrant "slow but up" not characterized | low | Would look like a hang to the reclaimer; LEASE_TTL=120s eventually recovers but surfacing is poor. |
 | Multi-Spark DB + image storage | deferred to M6 | Image files at `/data/panoptic-store/` are local-FS. NFS mount = zero code change. |

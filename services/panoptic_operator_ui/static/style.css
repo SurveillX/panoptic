@@ -18,6 +18,9 @@
   --evt-anomaly:    #d4760d;   /* amber — anomaly detector fired */
   --evt-spike:      #7b1fa2;   /* purple — activity spike */
   --evt-afterhours: #1565c0;   /* blue — after-hours activity */
+  --evt-drop:       #455a64;   /* slate — activity collapse (M12) */
+  --evt-start:      #2e7d32;   /* green — day-start (M12) */
+  --evt-latestart:  #ef6c00;   /* orange — delayed day-start (M12) */
   --evt-default:    #777;
 
   /* Trigger badge colors (image pane). */
@@ -108,6 +111,9 @@ tbody tr:hover { background: var(--bg-alt); }
 .evt-anomaly_detected    { border-left-color: var(--evt-anomaly)    !important; }
 .evt-activity_spike      { border-left-color: var(--evt-spike)      !important; }
 .evt-after_hours_activity{ border-left-color: var(--evt-afterhours) !important; }
+.evt-activity_drop       { border-left-color: var(--evt-drop)       !important; }
+.evt-activity_start      { border-left-color: var(--evt-start)      !important; }
+.evt-late_start          { border-left-color: var(--evt-latestart)  !important; }
 .tt-time { white-space: nowrap; }
 
 /* ---------- Images grid ---------- */
@@ -257,6 +263,9 @@ dl.kv dd { margin: 0; }
 .tag.evt-anomaly_detected     { border-left: 3px solid var(--evt-anomaly); }
 .tag.evt-activity_spike       { border-left: 3px solid var(--evt-spike); }
 .tag.evt-after_hours_activity { border-left: 3px solid var(--evt-afterhours); }
+.tag.evt-activity_drop        { border-left: 3px solid var(--evt-drop); }
+.tag.evt-activity_start       { border-left: 3px solid var(--evt-start); }
+.tag.evt-late_start           { border-left: 3px solid var(--evt-latestart); }
 
 ul.tags { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.4em; }
 ul.tags .tag { padding: 0.15em 0.6em; }
