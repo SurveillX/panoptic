@@ -18,6 +18,7 @@ import pytest
 from shared.signals.derive import (
     MARKER_AFTER_HOURS,
     MARKER_DROP,
+    MARKER_LATE_START,
     MARKER_SPIKE,
     MARKER_START,
     derive_history_markers,
@@ -311,6 +312,135 @@ class TestDeriveStart:
         drop = [m for m in markers if m["event_type"] == MARKER_DROP]
         start = [m for m in markers if m["event_type"] == MARKER_START]
         assert start and not drop
+
+
+# ---------------------------------------------------------------------------
+# P12d — late_start marker
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveLateStart:
+    """late_start fires when today's first active bucket is ≥ 2h past
+    this camera's typical first-active hour (per 14-day baseline)."""
+
+    def _late_of(self, markers: list[dict]) -> dict | None:
+        matches = [m for m in markers if m["event_type"] == MARKER_LATE_START]
+        return matches[0] if matches else None
+
+    def test_fires_when_3h_late(self):
+        # typical 07:00; today's first active bucket at 10:00 → 3h late
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 10, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=10,
+                first_today=None, quiet_minutes=180,
+            ),
+        )
+        late = self._late_of(markers)
+        assert late is not None
+        assert late["event_type"] == MARKER_LATE_START
+        assert late["label"] == "late start"
+        # (3-2)/6 ≈ 0.167, clamp to floor 0.5
+        assert late["confidence"] == pytest.approx(0.5)
+
+    def test_confidence_saturates_at_8h(self):
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 15, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=10,
+                first_today=None, quiet_minutes=300,
+            ),
+        )
+        late = self._late_of(markers)
+        assert late is not None
+        # 8h late → (8-2)/6 = 1.0
+        assert late["confidence"] == pytest.approx(1.0)
+
+    def test_suppressed_when_on_time(self):
+        # 1h late < 2h threshold — expected start-of-day variance.
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 8, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=10,
+                first_today=None, quiet_minutes=180,
+            ),
+        )
+        assert self._late_of(markers) is None
+
+    def test_suppressed_thin_day_baseline(self):
+        # Only 3 days_with_activity (< 5 floor) — baseline not stable enough.
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 10, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=3,
+                first_today=None, quiet_minutes=180,
+            ),
+        )
+        assert self._late_of(markers) is None
+
+    def test_suppressed_no_typical_hour(self):
+        # typical_first_active_hour_utc = None (new camera, no baseline).
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 10, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=None, days_with_activity=0,
+                first_today=None, quiet_minutes=180,
+            ),
+        )
+        assert self._late_of(markers) is None
+
+    def test_suppressed_when_already_active_today(self):
+        # first_active_bucket_start_today already set — late_start shares
+        # the first-of-day gate with start.
+        earlier = datetime(2026, 4, 20, 9, 30, tzinfo=UTC)
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 10, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=10,
+                first_today=earlier, quiet_minutes=30,
+            ),
+        )
+        assert self._late_of(markers) is None
+
+    def test_suppressed_below_noise_floor(self):
+        markers = derive_history_markers(
+            total_detections=3,
+            bucket_start=datetime(2026, 4, 20, 10, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=10,
+                first_today=None, quiet_minutes=180,
+            ),
+        )
+        assert self._late_of(markers) is None
+
+    def test_co_fires_with_start(self):
+        # Both guards pass: ≥ 2h quiet AND ≥ 2h late past typical hour.
+        # Plan §6.8 — intentionally co-fires on the same bucket.
+        markers = derive_history_markers(
+            total_detections=10,
+            bucket_start=datetime(2026, 4, 20, 10, 0, tzinfo=UTC),
+            bucket_minutes=15,
+            history=_active_history(
+                typical_hour=7, days_with_activity=10,
+                first_today=None, quiet_minutes=180,
+            ),
+        )
+        kinds = {m["event_type"] for m in markers}
+        assert MARKER_START in kinds
+        assert MARKER_LATE_START in kinds
 
 
 # ---------------------------------------------------------------------------

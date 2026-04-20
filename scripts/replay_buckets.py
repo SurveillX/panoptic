@@ -315,6 +315,57 @@ def scenario_after_hours(
     return buckets
 
 
+def scenario_late_start_by_3h(
+    serial_number: str, camera_id: str,
+    base_utc: datetime, hours: int,
+) -> list[dict]:
+    """
+    3-hours-late scenario for M12 `late_start` marker.
+
+    Seeds 5 prior calendar days with a single active bucket each at
+    UTC 07:00 — establishes typical_first_active_hour_utc = 7 with
+    day_baseline_days_with_activity = 5.
+
+    On the target day, emits one active bucket at UTC 10:00. The
+    3-hour delay past typical 07:00 is above the 2-hour threshold,
+    so `late_start` fires.
+
+    `start` also fires on the same bucket (per plan §6.8, intentional
+    co-fire): no active bucket exists earlier today and the time-based
+    quiet run from yesterday's 07:00 bucket easily exceeds 2h.
+
+    The `hours` argument is ignored — this is a fixed-shape scenario.
+    """
+    buckets: list[dict] = []
+    target_day = base_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # 5 prior calendar days, single active bucket at 07:00 UTC each.
+    for day_offset in range(5, 0, -1):
+        day = target_day - timedelta(days=day_offset)
+        start = day + timedelta(hours=7)
+        end = start + timedelta(minutes=15)
+        buckets.append(_build_bucket(
+            serial_number, camera_id, start, end,
+            object_counts={"person": random.randint(3, 6), "vehicle": random.randint(0, 1)},
+            cognia_stats=_cognia_stats(5.0, 1.0, 0.8, 75),
+            event_markers=[],
+            completeness=_default_completeness(),
+        ))
+
+    # Target day, 10:00 UTC active bucket — 3h late.
+    start = target_day + timedelta(hours=10)
+    end = start + timedelta(minutes=15)
+    buckets.append(_build_bucket(
+        serial_number, camera_id, start, end,
+        object_counts={"person": 5, "vehicle": 1},
+        cognia_stats=_cognia_stats(5.0, 1.0, 0.8, 75),
+        event_markers=[],
+        completeness=_default_completeness(),
+    ))
+
+    return buckets
+
+
 def scenario_start_of_day(
     serial_number: str, camera_id: str,
     base_utc: datetime, hours: int,
@@ -721,6 +772,7 @@ SCENARIOS = {
     "after_hours_drop":  scenario_after_hours_drop,
     "drop_midday":       scenario_drop_midday,
     "start_of_day":      scenario_start_of_day,
+    "late_start_by_3h":  scenario_late_start_by_3h,
     "workday":           scenario_workday,
 }
 

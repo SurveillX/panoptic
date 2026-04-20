@@ -172,7 +172,14 @@ def derive_history_markers(
     if start is not None:
         markers.append(start)
 
-    # P12d: late_start
+    late_start = _derive_late_start(
+        total_detections=total_detections,
+        bucket_start=bucket_start,
+        history=history,
+    )
+    if late_start is not None:
+        markers.append(late_start)
+
     # P12e: underperforming (conditional — Mode-1 FP gate)
 
     return markers
@@ -260,4 +267,50 @@ def _derive_start(
         "event_type": MARKER_START,
         "label":      "start of activity",
         "confidence": 0.9,
+    }
+
+
+def _derive_late_start(
+    *,
+    total_detections: int,
+    bucket_start: datetime,
+    history: BucketHistory,
+) -> dict | None:
+    """
+    Fire `late_start` when today's first active bucket is at least
+    _LATE_START_HOUR_DELAY_THRESHOLD hours past this camera's typical
+    first-active hour, based on the 14-day day-level baseline.
+
+    Intentionally co-fires with `start` on the same bucket when both
+    guards pass — the summary agent's dormant branches handle both
+    independently (plan §6.8).
+
+    UTC-day compromise (plan §2e): "today" and `typical_first_active_hour_utc`
+    are both UTC-based. Sites in distant time zones may see edge-case
+    markers near local midnight; documented in docs/M12.md.
+    """
+    if history.typical_first_active_hour_utc is None:
+        return None
+    if history.day_baseline_days_with_activity < _LATE_START_MIN_DAYS_WITH_ACTIVITY:
+        return None
+    if history.first_active_bucket_start_today is not None:
+        return None
+    if total_detections < _LATE_START_MIN_DETECTIONS:
+        return None
+
+    hour_delay = bucket_start.hour - history.typical_first_active_hour_utc
+    if hour_delay < _LATE_START_HOUR_DELAY_THRESHOLD:
+        return None
+
+    # Plan §2c: clamp((hour_delay - 2) / 6, 0.5, 1.0). Floor at 0.5 so
+    # every late_start carries enough severity to matter in UI sorts;
+    # linear ramp past 5h so deeply late starts saturate at 1.0 by 8h.
+    raw = (hour_delay - _LATE_START_HOUR_DELAY_THRESHOLD) / 6.0
+    confidence = max(0.5, min(1.0, raw))
+
+    return {
+        "ts":         bucket_start.isoformat(),
+        "event_type": MARKER_LATE_START,
+        "label":      "late start",
+        "confidence": confidence,
     }

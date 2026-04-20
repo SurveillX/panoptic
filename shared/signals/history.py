@@ -50,6 +50,11 @@ _DAY_BASELINE_WINDOW_DAYS: int = 14
 # history, not to marker thresholds.
 _QUIET_FLOOR_DETECTIONS: int = 1
 
+# Ceiling on recent_quiet_run_minutes — a camera that's been silent for
+# days shouldn't report 40_000+ minutes. 24h is "more than enough" for
+# every downstream guard (start only needs 120).
+_QUIET_RUN_CAP_MINUTES: int = 24 * 60
+
 
 @dataclass
 class BucketHistory:
@@ -192,6 +197,12 @@ def _fetch_same_day_context(
 
     "Today" is the UTC calendar day containing `bucket_start`. "Active"
     means activity_components.object_count_total >= _QUIET_FLOOR_DETECTIONS.
+
+    recent_quiet_run_minutes is the elapsed minutes since the last active
+    bucket ended. This is time-based (not bucket-count-based) so gaps in
+    bucket emission (trailer offline, sparse test fixtures) count as
+    quiet time rather than breaking the walk. Capped at _QUIET_RUN_CAP_MINUTES
+    so a long-dormant camera doesn't produce silly-large numbers.
     """
 
     day_floor = _utc_day_floor(bucket_start)
@@ -221,35 +232,34 @@ def _fetch_same_day_context(
     ).fetchone()
     first_active_today = row.bucket_start_utc if row is not None else None
 
-    # Walk backwards from `bucket_start` and count consecutive quiet
-    # buckets. We cap the walk at ~6 hours of history (24 buckets at 15min)
-    # because `start` already maxes out its trigger at 2 hours of quiet;
-    # no marker uses a longer tail today.
-    quiet_rows = conn.execute(
+    # Minutes since the last active bucket ended. When no prior active
+    # bucket exists (new camera / long-dormant), cap at 24h so the number
+    # stays sane — any guard that cares about "long enough" is satisfied.
+    row = conn.execute(
         text(
             """
-            SELECT bucket_start_utc,
-                   COALESCE((activity_components->>'object_count_total')::float, 0) AS total
+            SELECT EXTRACT(EPOCH FROM (:ts - MAX(bucket_end_utc))) / 60 AS quiet_minutes
               FROM panoptic_buckets
              WHERE serial_number = :sn
                AND camera_id     = :cam
                AND bucket_start_utc < :ts
-             ORDER BY bucket_start_utc DESC
-             LIMIT 24
+               AND (activity_components->>'object_count_total')::float >= :floor
             """
         ),
-        {"sn": serial_number, "cam": camera_id, "ts": bucket_start},
-    ).fetchall()
-
-    quiet_buckets = 0
-    for r in quiet_rows:
-        if r.total < _QUIET_FLOOR_DETECTIONS:
-            quiet_buckets += 1
-        else:
-            break
-    # 15-minute buckets — reported in minutes so the derivation code can
-    # compare against minute-valued thresholds without re-deriving cadence.
-    quiet_run_minutes = quiet_buckets * 15
+        {
+            "sn":    serial_number,
+            "cam":   camera_id,
+            "ts":    bucket_start,
+            "floor": _QUIET_FLOOR_DETECTIONS,
+        },
+    ).fetchone()
+    if row is None or row.quiet_minutes is None:
+        quiet_run_minutes = _QUIET_RUN_CAP_MINUTES
+    else:
+        quiet_run_minutes = min(
+            _QUIET_RUN_CAP_MINUTES,
+            max(0, int(row.quiet_minutes)),
+        )
 
     return first_active_today, quiet_run_minutes
 
