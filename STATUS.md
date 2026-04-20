@@ -134,7 +134,8 @@ Alembic at migration **010**.
 | M8 | Unified event layer (panoptic_events + producer worker) | ✅ done — 58/58 image triggers + 105/105 bucket markers converted; Search API + period summary both cite real event_ids; backfill is zero-insert on rerun |
 | M9 | Async report generation (daily + weekly HTML) | ✅ done — `POST /v1/reports/{daily,weekly}` enqueue via new `panoptic_report_generator` worker; content-addressed report_ids; authorized asset endpoint; weekly aggregation SQL tables + per-day narrative roll-up; 90-day on-disk retention; cron entries documented in `docs/REPORTS.md` |
 | M10 | Operator evidence browser UI | ✅ done — new `panoptic_operator_ui` service (12th, `:8400`) over 9 new read-only Search API endpoints; HTMX + Jinja2; pages: fleet, trailer-day, search (URL-driven), report viewer (iframe), event/summary/image detail; explicit empty states; "Generate daily report" button wires through to the M9 worker; access model documented in `docs/OPERATOR_UI.md` |
-| M11 | Task-oriented agent layer | ✅ done — new `panoptic_agent` service (13th, `:8500`) runs a prompt-driven tool-use loop over the local vLLM (Gemma-4-26B-it). 11 tools wrap existing Search API endpoints; grounded structured answers with evidence-first citations; `"Ask about this day"` panel on the trailer-day page; seed-question harness baseline 7/9 PASS on local Gemma; hosted-model swap (Claude / GPT-4) is an `AGENT_BACKEND` env flip for M11.1. Access model + guardrails in `docs/AGENT.md` |
+| M11 | Task-oriented agent layer | ✅ done — new `panoptic_agent` service (13th, `:8500`) runs a prompt-driven tool-use loop. 11 tools wrap existing Search API endpoints; grounded structured answers with evidence-first citations; `"Ask about this day"` panel on the trailer-day page; seed-question harness baseline 7/9 PASS on local Gemma. Access model + guardrails in `docs/AGENT.md` |
+| M11.1 | Multi-backend agent | ✅ done — request-facing keys `gemma`/`claude`/`gpt5mini` dispatch to VLLMBackend/ClaudeBackend/OpenAIBackend via a small Backend protocol. `POST /v1/agent/ask` gains optional `backend` field; new `GET /v1/agent/backends` exposes availability + pricing; trace gains `provider` + `backend_latency_ms` + `estimated_cost_usd` + `backend_error`; runner.py gains `--backend` + `--compare` + `--csv-out` for cross-backend A/B. Hosted adapters dormant until their API key is set. Prompt-driven parity across all three backends preserved for apples-to-apples benchmarking. |
 
 ---
 
@@ -469,7 +470,63 @@ tail-truncations but middle-truncations get flagged.
   parse-error nudge path for recovery.
 - **Context-length 400 from vLLM** was surfacing as a 503 to the
   caller. Now caught inside the tool-use loop and returned as a
-  structured degraded answer with `stop_reason=vllm_error_<code>`.
+  structured degraded answer with `stop_reason=backend_error` +
+  `backend_error.trace_tag=gemma_error_<code>`.
+
+### 6.14 M11.1 — multi-backend agent
+
+The `panoptic_agent` service gained a proper `Backend` abstraction
+(`services/panoptic_agent/backends/`) with three concrete adapters
+registered by **request-facing key**, not provider:
+
+| Key (request-facing) | Provider tag | Adapter class | Default model |
+|---|---|---|---|
+| `gemma` | `vllm` | `VLLMBackend` | `gemma-4-26b-it` |
+| `claude` | `anthropic` | `ClaudeBackend` | `claude-sonnet-4-6` |
+| `gpt5mini` | `openai` | `OpenAIBackend` | `gpt-5-mini` |
+
+AI-team review refinement is baked in: `trace.backend` (the
+request-facing key) and `trace.provider` (vendor tag) are separate
+fields. Future models from the same provider (a `gpt5` alongside
+`gpt5mini`) add as a registration line, no rename, no schema change.
+
+**New on `POST /v1/agent/ask`:** optional `backend` field. Unknown
+→ 400 with allowed list; registered-but-unavailable → 400 with
+`unavailable_reason`; default backend outage → 503. No silent
+fallback.
+
+**New endpoint:** `GET /v1/agent/backends` reports the full registry:
+provider, model, availability, probe latency, unavailable_reason,
+pricing. Operators can see what's configured vs what's live.
+
+**New trace fields:** `provider`, `backend_latency_ms` (LLM portion
+excl. tool dispatch), `estimated_cost_usd` (benchmarking telemetry,
+not billing truth — name enforces that), `backend_error`
+`{code, body_preview, trace_tag}` on 4xx/5xx, `raw_usage[]` (per-call
+untouched provider usage dict for audit).
+
+**New on the seed harness** (`tests/agent/runner.py`):
+- `--backend gemma|claude|gpt5mini` forces a single backend for the run
+- `--compare gemma,claude,gpt5mini` runs the seed set once per backend
+  and emits a side-by-side table (per-question verdict + latency;
+  aggregates for pass/warn/fail, avg latency + iterations +
+  tool_calls + citations + tokens, total estimated cost)
+- `--csv-out` writes flat rows for spreadsheet diffing
+- Unavailable backends render as "skipped" rows — table stays
+  comparable across runs
+
+**Protocol parity lock (v1):** all three backends use the same
+prompt-driven JSON action protocol. Native tool_use / function-calling
+(Claude, OpenAI) is deliberately unused so `--compare` answers
+"which backend is best under this one protocol" cleanly. M11.2 is the
+place to add per-backend native-tool paths if the numbers justify it.
+
+**Dormant-until-key:** ClaudeBackend and OpenAIBackend construct
+cleanly without their API keys — they register as
+`is_available=false` with the exact reason. The moment a key lands in
+`.env`, the next agent restart picks it up, no code change.
+
+**New deps:** `anthropic>=0.40`, `openai>=1.40` in `pyproject.toml`.
 
 ---
 
@@ -609,14 +666,26 @@ Fleet / search / detail pages documented in `docs/OPERATOR_UI.md`.
 docker compose up -d agent
 curl -sS http://localhost:8500/healthz | jq .
 
-# Single-shot /ask via curl
+# Single-shot /ask via curl (default backend)
 curl -sS -X POST http://localhost:8500/v1/agent/ask \
     -H 'Content-Type: application/json' \
     -d '{"question":"What happened today?",
          "scope":{"serial_number":"YARD-A-001","date":"2026-04-18"}}'
 
-# Baseline seed-question harness
+# Multi-backend ops (M11.1)
+curl -sS http://localhost:8500/v1/agent/backends | jq .
+curl -sS -X POST http://localhost:8500/v1/agent/ask -H 'Content-Type: application/json' \
+    -d '{"question":"...","backend":"gemma"}'         # force gemma
+# .../ask with backend:"claude" or "gpt5mini" when their keys are set
+
+# Seed harness — single backend
 .venv/bin/python tests/agent/runner.py
+.venv/bin/python tests/agent/runner.py --backend gemma
+
+# Seed harness — cross-backend comparison
+.venv/bin/python tests/agent/runner.py \
+    --compare gemma,claude,gpt5mini \
+    --csv-out /tmp/bench.csv
 ```
 
 Tools, guardrails, access model in `docs/AGENT.md`.
@@ -716,9 +785,14 @@ See §6.11 and `docs/OPERATOR_UI.md`.
 **M11 — agent layer (✅ done):**
 New `panoptic_agent` service over the local vLLM. Same tool surface a
 hosted-model agent would want. Seed baseline 7/9 on Gemma. See §6.12
-and `docs/AGENT.md`. Pick up next with M11.1 hosted-model swap
-(AGENT_BACKEND=claude) whenever real customer demo needs the quality
-step-up, or with M12 expanded bucket-marker derivation.
+and `docs/AGENT.md`.
+
+**M11.1 — multi-backend agent (✅ done):**
+`gemma` / `claude` / `gpt5mini` backends behind a small Backend
+protocol. Dormant-until-key for the two hosted paths. `--compare`
+runner for apples-to-apples A/B. See §6.14 and `docs/AGENT.md`.
+Activating the hosted backends is now a secrets-in-`.env` operation,
+no code change.
 
 **M12 — expanded bucket-marker derivation (next milestone):**
 Add derivation logic for `drop`, `start`, `late_start`,
