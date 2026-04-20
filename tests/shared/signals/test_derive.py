@@ -16,11 +16,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from shared.signals.derive import (
+    IMPLEMENTED_HISTORY_MARKERS,
     MARKER_AFTER_HOURS,
     MARKER_DROP,
     MARKER_LATE_START,
     MARKER_SPIKE,
     MARKER_START,
+    MARKER_UNDERPERFORMING,
     derive_history_markers,
     derive_markers,
 )
@@ -137,25 +139,6 @@ class TestDeriveDrop:
         assert drop is not None
         assert 0.0 <= drop["confidence"] <= 1.0
 
-    def test_confidence_reflects_sub_saturation_gap(self):
-        # Keep the gap small enough that clamping isn't hit: with mean=50
-        # and std=50, raw ≈ (50 - current) / 51; at current=20 raw ≈ 0.59.
-        history = _active_history(mean=50.0, std=50.0, n=96)
-        # threshold = max(1, 50 - 100) = 1 — drop fires for 0 only.
-        # Pick parameters where the formula is in its linear regime by
-        # hand-crafting: mean=30, std=50, threshold=max(1, -70)=1.
-        history = _active_history(mean=30.0, std=50.0, n=96)
-        markers = derive_history_markers(
-            total_detections=0,
-            bucket_start=self._MIDDAY,
-            bucket_minutes=15,
-            history=history,
-        )
-        drop = self._drop_of(markers)
-        assert drop is not None
-        # raw = (30 - 0) / (50 + 1) ≈ 0.588 — in the linear regime.
-        assert drop["confidence"] == pytest.approx(30.0 / 51.0, abs=1e-3)
-
     def test_suppressed_when_current_above_threshold(self):
         # mean=100, std=30, threshold=40; current=60 ≥ 40 → no fire.
         markers = derive_history_markers(
@@ -211,18 +194,31 @@ class TestDeriveDrop:
         )
         assert self._drop_of(markers) is None
 
-    def test_floor_threshold_never_below_one(self):
-        # When mean - 2σ ≤ 0, threshold floors at 1: drop still fires for
-        # zero detections (but not for 1+, which meets the floor).
-        history = _active_history(mean=5.0, std=3.0, n=96)
-        # mean - 2σ = -1, floored to 1
+    def test_suppressed_when_baseline_too_bursty(self):
+        # Yard cameras often have mean << std (bursty traffic). When
+        # mean - 2σ < 1 the distribution is too volatile for a drop
+        # rule to be meaningful — every zero bucket would fire. Real
+        # data showed this producing 34% fire rate on the first dry
+        # run; suppressing keeps the signal operationally useful.
+        bursty = _active_history(mean=10.0, std=20.0, n=96)   # mean - 2σ = -30
+        borderline = _active_history(mean=10.0, std=5.0, n=96)  # mean - 2σ = 0
+        meaningful = _active_history(mean=10.0, std=3.0, n=96)  # mean - 2σ = 4
+
+        for hist in (bursty, borderline):
+            assert self._drop_of(derive_history_markers(
+                total_detections=0, bucket_start=self._MIDDAY,
+                bucket_minutes=15, history=hist,
+            )) is None
+
+        # Meaningful baseline: current=0 < threshold=4 → fires.
         assert self._drop_of(derive_history_markers(
             total_detections=0, bucket_start=self._MIDDAY,
-            bucket_minutes=15, history=history,
+            bucket_minutes=15, history=meaningful,
         )) is not None
+        # Current=4 is not below threshold — does not fire.
         assert self._drop_of(derive_history_markers(
-            total_detections=1, bucket_start=self._MIDDAY,
-            bucket_minutes=15, history=history,
+            total_detections=4, bucket_start=self._MIDDAY,
+            bucket_minutes=15, history=meaningful,
         )) is None
 
 
@@ -441,6 +437,134 @@ class TestDeriveLateStart:
         kinds = {m["event_type"] for m in markers}
         assert MARKER_START in kinds
         assert MARKER_LATE_START in kinds
+
+
+# ---------------------------------------------------------------------------
+# P12e — underperforming marker (conditional; not in PRODUCED_HISTORY_MARKERS
+# until Mode-1 FP gate passes. Tests run via produce=IMPLEMENTED_HISTORY_MARKERS.)
+# ---------------------------------------------------------------------------
+
+
+class TestDeriveUnderperforming:
+    def _under_of(self, markers: list[dict]) -> dict | None:
+        matches = [m for m in markers if m["event_type"] == MARKER_UNDERPERFORMING]
+        return matches[0] if matches else None
+
+    def _derive(self, **kw):
+        """Helper that turns underperforming derivation on."""
+        kw.setdefault("bucket_minutes", 15)
+        return derive_history_markers(produce=IMPLEMENTED_HISTORY_MARKERS, **kw)
+
+    def test_fires_active_but_low_in_work_window(self):
+        # mean=100, std=20, threshold = 100 - 1.5*20 = 70; current=30 < 70.
+        # Hour 10 in [typical_7, typical_7+10). Warm-up: first active today
+        # was 2h ago → >= 30 min elapsed.
+        first_today = datetime(2026, 4, 20, 8, 0, tzinfo=UTC)
+        now = datetime(2026, 4, 20, 10, 0, tzinfo=UTC)
+        markers = self._derive(
+            total_detections=30,
+            bucket_start=now,
+            history=_active_history(
+                mean=100.0, std=20.0, n=96,
+                typical_hour=7, days_with_activity=10,
+                first_today=first_today,
+            ),
+        )
+        under = self._under_of(markers)
+        assert under is not None
+        assert under["event_type"] == MARKER_UNDERPERFORMING
+        assert under["label"] == "site underperforming"
+        assert 0.3 <= under["confidence"] <= 1.0
+
+    def test_suppressed_when_activity_at_baseline(self):
+        first_today = datetime(2026, 4, 20, 8, 0, tzinfo=UTC)
+        now = datetime(2026, 4, 20, 10, 0, tzinfo=UTC)
+        # current=90, threshold=70 → NOT below threshold; no fire.
+        markers = self._derive(
+            total_detections=90,
+            bucket_start=now,
+            history=_active_history(
+                mean=100.0, std=20.0, n=96,
+                typical_hour=7, days_with_activity=10,
+                first_today=first_today,
+            ),
+        )
+        assert self._under_of(markers) is None
+
+    def test_suppressed_on_warm_up_bucket(self):
+        # first active today == this bucket → 0 min elapsed < 30 min warm-up.
+        now = datetime(2026, 4, 20, 7, 0, tzinfo=UTC)
+        markers = self._derive(
+            total_detections=30,
+            bucket_start=now,
+            history=_active_history(
+                mean=100.0, std=20.0, n=96,
+                typical_hour=7, days_with_activity=10,
+                first_today=None,  # this is today's first active
+            ),
+        )
+        assert self._under_of(markers) is None
+
+    def test_suppressed_outside_work_window(self):
+        # typical_hour=7, window [7, 17). 22:00 is outside → suppress.
+        first_today = datetime(2026, 4, 20, 8, 0, tzinfo=UTC)
+        now = datetime(2026, 4, 20, 22, 0, tzinfo=UTC)
+        markers = self._derive(
+            total_detections=30,
+            bucket_start=now,
+            history=_active_history(
+                mean=100.0, std=20.0, n=96,
+                typical_hour=7, days_with_activity=10,
+                first_today=first_today,
+            ),
+        )
+        assert self._under_of(markers) is None
+
+    def test_suppressed_on_zero_detections(self):
+        # current=0 → drop's territory, not underperforming.
+        first_today = datetime(2026, 4, 20, 8, 0, tzinfo=UTC)
+        now = datetime(2026, 4, 20, 10, 0, tzinfo=UTC)
+        markers = self._derive(
+            total_detections=0,
+            bucket_start=now,
+            history=_active_history(
+                mean=100.0, std=20.0, n=96,
+                typical_hour=7, days_with_activity=10,
+                first_today=first_today,
+            ),
+        )
+        assert self._under_of(markers) is None
+
+    def test_suppressed_thin_rolling_history(self):
+        first_today = datetime(2026, 4, 20, 8, 0, tzinfo=UTC)
+        now = datetime(2026, 4, 20, 10, 0, tzinfo=UTC)
+        # n=20 < _UNDERPERFORMING_MIN_ROLLING_SAMPLE (40) → suppress.
+        markers = self._derive(
+            total_detections=30,
+            bucket_start=now,
+            history=_active_history(
+                mean=100.0, std=20.0, n=20,
+                typical_hour=7, days_with_activity=10,
+                first_today=first_today,
+            ),
+        )
+        assert self._under_of(markers) is None
+
+    def test_default_produce_excludes_underperforming(self):
+        # No `produce` arg → production default excludes underperforming.
+        first_today = datetime(2026, 4, 20, 8, 0, tzinfo=UTC)
+        now = datetime(2026, 4, 20, 10, 0, tzinfo=UTC)
+        markers = derive_history_markers(
+            total_detections=30,
+            bucket_start=now,
+            bucket_minutes=15,
+            history=_active_history(
+                mean=100.0, std=20.0, n=96,
+                typical_hour=7, days_with_activity=10,
+                first_today=first_today,
+            ),
+        )
+        assert not any(m["event_type"] == MARKER_UNDERPERFORMING for m in markers)
 
 
 # ---------------------------------------------------------------------------

@@ -130,12 +130,34 @@ def derive_markers(
 # ---------------------------------------------------------------------------
 
 
+# Production-shipped marker keys. `underperforming` is omitted on purpose
+# (plan §3 — conditional on Mode-1 FP gate against real yard data); flip
+# this set to PRODUCED_HISTORY_MARKERS | {"underperforming"} once the
+# rederive evaluation clears the gate.
+PRODUCED_HISTORY_MARKERS: frozenset[str] = frozenset({
+    MARKER_DROP,
+    MARKER_START,
+    MARKER_LATE_START,
+})
+
+# All markers implemented in this module, gated or not. Used by the
+# rederive script to evaluate candidates (including `underperforming`)
+# before they reach production.
+IMPLEMENTED_HISTORY_MARKERS: frozenset[str] = frozenset({
+    MARKER_DROP,
+    MARKER_START,
+    MARKER_LATE_START,
+    MARKER_UNDERPERFORMING,
+})
+
+
 def derive_history_markers(
     *,
     total_detections: int,
     bucket_start: datetime,
     bucket_minutes: int,
     history: BucketHistory,
+    produce: frozenset[str] | set[str] | None = None,
 ) -> list[dict]:
     """
     Derive history-dependent markers from aggregate bucket inputs + a
@@ -144,43 +166,55 @@ def derive_history_markers(
     Returns a list of marker dicts shaped like `derive_markers`' output:
         {"ts": iso8601, "event_type": str, "label": str, "confidence": float}
 
-    The caller merges the returned list with fragment-based markers into
-    `panoptic_buckets.event_markers`. Each per-marker helper is enabled
-    phase-by-phase (M12 plan P12b → P12e); this function returns an empty
-    list until the first phase lands.
+    `produce` filters which marker families are attempted. When None
+    (default), only PRODUCED_HISTORY_MARKERS fire — the safe set that's
+    been validated for production. The rederive script passes a larger
+    set (including `underperforming`) for Mode-1 evaluation against
+    real historical data before flipping the production gate.
 
     `bucket_minutes` is carried through so per-marker logic can convert
     between minute-valued thresholds and bucket counts without hard-
     coding 15-minute cadence.
     """
 
+    allowed = produce if produce is not None else PRODUCED_HISTORY_MARKERS
     markers: list[dict] = []
 
-    drop = _derive_drop(
-        total_detections=total_detections,
-        bucket_start=bucket_start,
-        history=history,
-    )
-    if drop is not None:
-        markers.append(drop)
+    if MARKER_DROP in allowed:
+        drop = _derive_drop(
+            total_detections=total_detections,
+            bucket_start=bucket_start,
+            history=history,
+        )
+        if drop is not None:
+            markers.append(drop)
 
-    start = _derive_start(
-        total_detections=total_detections,
-        bucket_start=bucket_start,
-        history=history,
-    )
-    if start is not None:
-        markers.append(start)
+    if MARKER_START in allowed:
+        start = _derive_start(
+            total_detections=total_detections,
+            bucket_start=bucket_start,
+            history=history,
+        )
+        if start is not None:
+            markers.append(start)
 
-    late_start = _derive_late_start(
-        total_detections=total_detections,
-        bucket_start=bucket_start,
-        history=history,
-    )
-    if late_start is not None:
-        markers.append(late_start)
+    if MARKER_LATE_START in allowed:
+        late_start = _derive_late_start(
+            total_detections=total_detections,
+            bucket_start=bucket_start,
+            history=history,
+        )
+        if late_start is not None:
+            markers.append(late_start)
 
-    # P12e: underperforming (conditional — Mode-1 FP gate)
+    if MARKER_UNDERPERFORMING in allowed:
+        underperforming = _derive_underperforming(
+            total_detections=total_detections,
+            bucket_start=bucket_start,
+            history=history,
+        )
+        if underperforming is not None:
+            markers.append(underperforming)
 
     return markers
 
@@ -215,11 +249,17 @@ def _derive_drop(
     if hour < _AFTER_HOURS_END_HOUR or hour >= _AFTER_HOURS_START_HOUR:
         return None
 
-    threshold = max(
-        1.0,
+    # Meaningful-drop threshold: mean - 2σ must itself clear the
+    # noise floor. When std dwarfs mean (CoV ≥ ~0.5), a camera's
+    # distribution is too bursty for a below-mean rule to be useful
+    # — every zero-detection daytime bucket would fire drop on the
+    # yard's high-variance cameras. Suppress instead.
+    threshold = (
         history.rolling_mean_total_detections
-        - _DROP_SIGMA * history.rolling_std_total_detections,
+        - _DROP_SIGMA * history.rolling_std_total_detections
     )
+    if threshold < 1.0:
+        return None
     if total_detections >= threshold:
         return None
 
@@ -312,5 +352,81 @@ def _derive_late_start(
         "ts":         bucket_start.isoformat(),
         "event_type": MARKER_LATE_START,
         "label":      "late start",
+        "confidence": confidence,
+    }
+
+
+def _derive_underperforming(
+    *,
+    total_detections: int,
+    bucket_start: datetime,
+    history: BucketHistory,
+) -> dict | None:
+    """
+    Fire `underperforming` when a camera is active but running at a
+    fraction of its usual intensity during its typical work window.
+
+    Fuzziest of the M12 markers — plan §2d flags this as the highest
+    false-positive risk. Ships to production only after Mode-1 rederive
+    dry-run on real yard data clears the FP gate (§5a).
+
+    Guards:
+      - rolling_bucket_sample_size     >= 40     (≥ 10h of history)
+      - rolling_mean_total_detections  >= 10     (real baseline)
+      - 0 < current < mean - 1.5σ                (active but low)
+      - hour in [typical_first_active_hour, typical_first_active_hour + 10)
+      - minutes_since_first_active_today >= 30   (skip warm-up)
+    """
+    if history.rolling_bucket_sample_size < _UNDERPERFORMING_MIN_ROLLING_SAMPLE:
+        return None
+    if history.rolling_mean_total_detections < _UNDERPERFORMING_MIN_ROLLING_MEAN:
+        return None
+
+    # Active-but-low: strictly > 0 so this doesn't overlap drop, AND
+    # strictly below 1.5σ from the baseline.
+    if total_detections <= 0:
+        return None
+    threshold = (
+        history.rolling_mean_total_detections
+        - _UNDERPERFORMING_SIGMA * history.rolling_std_total_detections
+    )
+    if total_detections >= threshold:
+        return None
+
+    # Hour-of-day gate — must be inside the camera's typical work window.
+    # Requires a day-level baseline; underperforming is not meaningful
+    # without "normal work hours" context.
+    if history.typical_first_active_hour_utc is None:
+        return None
+    typical = history.typical_first_active_hour_utc
+    hour = bucket_start.hour
+    if hour < typical or hour >= typical + _UNDERPERFORMING_ACTIVE_WINDOW_HOURS:
+        return None
+
+    # Warm-up skip — if today's first active bucket happened < 30 min ago,
+    # the ramp-up hasn't finished; suppress.
+    first_today = history.first_active_bucket_start_today
+    if first_today is None:
+        # No prior active bucket today AND current is active → this bucket
+        # IS today's first active. Definitionally inside warm-up (0 min
+        # elapsed since first-of-day == this one).
+        return None
+    minutes_since_first = int(
+        (bucket_start - first_today).total_seconds() / 60
+    )
+    if minutes_since_first < _UNDERPERFORMING_WARMUP_MINUTES:
+        return None
+
+    # Confidence: clamp((mean - current) / (std*3 + 1), 0.3, 1.0).
+    # 0.3 floor keeps underperforming below spike/drop in severity sorts.
+    raw = (
+        history.rolling_mean_total_detections - float(total_detections)
+    ) / (history.rolling_std_total_detections * 3.0 + 1.0)
+    confidence = max(0.3, min(1.0, raw))
+
+    return {
+        "ts":         bucket_start.isoformat(),
+        "event_type": MARKER_UNDERPERFORMING,
+        "label":      "site underperforming",
         "confidence": confidence,
     }
