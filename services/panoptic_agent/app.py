@@ -1,11 +1,19 @@
 """
 Panoptic Agent — FastAPI app factory.
 
-One endpoint (`POST /v1/agent/ask`) + health. Every request runs a
-prompt-driven tool-use loop against the local vLLM and returns a
-structured answer with citations + trace.
+Endpoints:
+  POST /v1/agent/ask       — run one tool-use loop turn
+  GET  /v1/agent/backends  — list registered backends + availability
+  GET  /healthz            — service + dependency status
 
-Rate limiting: in-memory token-bucket, soft cap per minute. Internal
+The multi-backend wiring (M11.1) lives here:
+  - `build_registry()` from services.panoptic_agent.backends constructs
+    a `BackendRegistry` at startup, honoring AGENT_BACKENDS_ENABLED and
+    probing each backend's availability.
+  - Request may specify a `backend` field; unknown / unavailable →
+    400 with a readable reason. No silent fallback.
+
+Rate limiting: in-memory sliding window, soft cap per minute. Internal
 service — no per-user auth.
 """
 
@@ -24,12 +32,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from .agent import (
-    AGENT_BACKEND,
-    AGENT_MODEL,
-    AGENT_VLLM_BASE_URL,
-    run_agent,
-)
+from .agent import run_agent
+from .backends import build_registry
 from .client import SEARCH_API_URL, SearchAPIClient
 
 log = logging.getLogger(__name__)
@@ -46,22 +50,25 @@ def _log_ask_audit(*, question: str, scope: dict | None, response: dict) -> None
     answer = response.get("answer") or {}
     citations = response.get("citations") or []
     record = {
-        "ts":              datetime.now(timezone.utc).isoformat(),
-        "question":        question,
-        "scope":           scope or {},
-        "backend":         trace.get("backend"),
-        "model":           trace.get("model"),
-        "iterations":      trace.get("iterations"),
-        "tool_call_count": trace.get("tool_call_count"),
-        "tool_names":      [tc.get("name") for tc in (trace.get("tool_calls") or [])],
-        "citations_count": len(citations),
-        "unverified":      len(trace.get("unverified_citations") or []),
-        "tokens_in":       trace.get("total_prompt_tokens"),
-        "tokens_out":      trace.get("total_completion_tokens"),
-        "latency_ms":      trace.get("total_latency_ms"),
-        "parse_failures":  trace.get("parse_failures"),
-        "stop_reason":     trace.get("stop_reason"),
-        "narrative":       (answer.get("narrative") or "")[:400],
+        "ts":                 datetime.now(timezone.utc).isoformat(),
+        "question":           question,
+        "scope":              scope or {},
+        "backend":            trace.get("backend"),
+        "provider":           trace.get("provider"),
+        "model":              trace.get("model"),
+        "iterations":         trace.get("iterations"),
+        "tool_call_count":    trace.get("tool_call_count"),
+        "tool_names":         [tc.get("name") for tc in (trace.get("tool_calls") or [])],
+        "citations_count":    len(citations),
+        "unverified":         len(trace.get("unverified_citations") or []),
+        "tokens_in":          trace.get("total_prompt_tokens"),
+        "tokens_out":         trace.get("total_completion_tokens"),
+        "latency_ms":         trace.get("total_latency_ms"),
+        "backend_latency_ms": trace.get("backend_latency_ms"),
+        "parse_failures":     trace.get("parse_failures"),
+        "stop_reason":        trace.get("stop_reason"),
+        "estimated_cost_usd": trace.get("estimated_cost_usd"),
+        "narrative":          (answer.get("narrative") or "")[:400],
     }
     _AGENT_AUDIT_LOG.info(json.dumps(record, separators=(",", ":")))
 
@@ -80,6 +87,9 @@ class AskScope(BaseModel):
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
     scope: AskScope | None = None
+    # New in M11.1: optional request-facing backend key. Null → use
+    # the registry's resolved default.
+    backend: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -112,21 +122,19 @@ class _SlidingWindowLimiter:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Panoptic Agent", version="1.0")
-    http_client = httpx.Client(timeout=120.0)
     search_api_client = SearchAPIClient()
     limiter = _SlidingWindowLimiter(AGENT_ASK_RATE_PER_MIN)
+    registry = build_registry()
 
     @app.get("/healthz")
     def healthz():
-        status = "ok"
+        # Search API + at-least-one-backend-available.
         search_reachable = False
-        vllm_reachable = False
         detail: dict = {
-            "service": "panoptic_agent",
-            "backend": AGENT_BACKEND,
-            "model": AGENT_MODEL,
-            "vllm_url": AGENT_VLLM_BASE_URL,
+            "service":        "panoptic_agent",
             "search_api_url": SEARCH_API_URL,
+            "default_backend": registry.default,
+            "backends":        registry.list_public(),
         }
         try:
             up = search_api_client.health()
@@ -135,23 +143,20 @@ def create_app() -> FastAPI:
         except Exception as exc:
             detail["search_api_error"] = str(exc)[:200]
 
-        try:
-            r = http_client.get(f"{AGENT_VLLM_BASE_URL}/v1/models", timeout=5.0)
-            r.raise_for_status()
-            vllm_reachable = True
-            # Include the served model list for operator visibility.
-            data = (r.json() or {}).get("data") or []
-            detail["vllm_served_models"] = [m.get("id") for m in data][:5]
-        except Exception as exc:
-            detail["vllm_error"] = str(exc)[:200]
-
-        if not (search_reachable and vllm_reachable):
-            status = "error"
+        any_backend_available = any(b.is_available for b in registry.backends.values())
+        status = "ok" if (search_reachable and any_backend_available) else "error"
         detail["status"] = status
         detail["search_api_reachable"] = search_reachable
-        detail["vllm_reachable"] = vllm_reachable
+        detail["any_backend_available"] = any_backend_available
         http_code = 200 if status == "ok" else 503
         return JSONResponse(detail, status_code=http_code)
+
+    @app.get("/v1/agent/backends")
+    def list_backends():
+        return {
+            "default":  registry.default,
+            "backends": registry.list_public(),
+        }
 
     @app.post("/v1/agent/ask")
     def agent_ask(request: Request, body: dict):
@@ -163,11 +168,46 @@ def create_app() -> FastAPI:
                 content={"error": "validation failed", "detail": exc.errors()},
             )
 
+        # Backend selection.
+        requested = req.backend
+        backend = None
+        if requested is None:
+            backend = registry.get(registry.default)
+            if backend is None or not backend.is_available:
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "error": "default backend unavailable",
+                        "detail": f"default='{registry.default}'; no backend is currently available",
+                        "available": [b.name for b in registry.backends.values() if b.is_available],
+                    },
+                )
+        else:
+            backend = registry.backends.get(requested)
+            if backend is None:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error":   "unknown backend",
+                        "detail":  f"requested '{requested}' is not registered",
+                        "allowed": list(registry.backends.keys()),
+                    },
+                )
+            if not backend.is_available:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error":              "backend unavailable",
+                        "detail":             f"backend '{requested}' is registered but not available",
+                        "unavailable_reason": backend.unavailable_reason,
+                    },
+                )
+
         if not limiter.allow():
             return JSONResponse(
                 status_code=429,
                 content={
-                    "error": "rate limited",
+                    "error":  "rate limited",
                     "detail": f"max {AGENT_ASK_RATE_PER_MIN} /v1/agent/ask per minute",
                 },
             )
@@ -175,7 +215,7 @@ def create_app() -> FastAPI:
         try:
             scope_dict = req.scope.model_dump() if req.scope else None
             response = run_agent(
-                http_client=http_client,
+                backend=backend,
                 search_api_client=search_api_client,
                 question=req.question,
                 scope=scope_dict,
@@ -185,7 +225,7 @@ def create_app() -> FastAPI:
             return JSONResponse(
                 status_code=503,
                 content={
-                    "error": "upstream unreachable",
+                    "error":  "upstream unreachable",
                     "detail": str(exc)[:300],
                 },
             )
@@ -196,7 +236,6 @@ def create_app() -> FastAPI:
                 content={"error": "agent failed", "detail": str(exc)[:500]},
             )
 
-        # Structured audit log for replay/eval — one JSONL line per ask.
         try:
             _log_ask_audit(
                 question=req.question,

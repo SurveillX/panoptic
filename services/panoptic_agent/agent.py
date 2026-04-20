@@ -1,22 +1,22 @@
 """
-Agent orchestration — prompt-driven tool-use loop over vLLM.
+Agent orchestration — prompt-driven tool-use loop.
 
-One call per /v1/agent/ask. Enforces:
+One call per /v1/agent/ask. The loop is backend-agnostic: it receives
+a `Backend` instance (see services/panoptic_agent/backends/base.py)
+and calls `backend.generate()` for the model turn. Each Backend adapter
+handles SDK quirks (request shape, usage mapping, stop-reason mapping,
+error → None) while this loop owns:
+
   - max-iteration cap
-  - max-tokens cap
   - scope injection
   - gated write tool (generate_daily_report)
+  - JSON-protocol parsing + parse-error nudge
   - post-hoc citation verification
+  - trace assembly
 
-Backend: local vLLM (Gemma-4-26B-it by default) via the OpenAI-compatible
-`/v1/chat/completions` endpoint. No native function-calling — the loop
-is prompt-driven: the model emits one JSON action per turn, the
-orchestrator parses/dispatches/appends the tool result as a new user
-message, and repeats.
-
-A future backend swap (Claude, GPT-4, etc.) is a ~50 LOC change in this
-module gated on AGENT_BACKEND; the rest of the service (tools, citations,
-rate limit, UI wiring) is backend-agnostic.
+Protocol is prompt-driven across every backend for M11.1 to preserve
+apples-to-apples benchmarking. Native tool_use / function-calling is
+intentionally deferred to M11.2.
 """
 
 from __future__ import annotations
@@ -29,8 +29,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-
+from .backends.base import Backend, estimate_cost_usd
 from .citations import verify_citations
 from .client import SearchAPIClient
 from .prompts import build_system_prompt, scope_preamble
@@ -43,19 +42,12 @@ from .tools import (
 log = logging.getLogger(__name__)
 
 
-AGENT_BACKEND: str = os.environ.get("AGENT_BACKEND", "vllm").lower()
-AGENT_MODEL: str = os.environ.get("AGENT_MODEL", "gemma-4-26b-it")
-AGENT_VLLM_BASE_URL: str = os.environ.get(
-    "AGENT_VLLM_BASE_URL",
-    os.environ.get("VLLM_BASE_URL", "http://localhost:8000"),
-).rstrip("/")
 AGENT_MAX_ITERATIONS: int = int(os.environ.get("AGENT_MAX_ITERATIONS", "8"))
 AGENT_MAX_TOKENS: int = int(os.environ.get("AGENT_MAX_TOKENS", "1024"))
 AGENT_TEMPERATURE: float = float(os.environ.get("AGENT_TEMPERATURE", "0.2"))
 AGENT_MAX_TOOL_OUTPUT_CHARS: int = int(
     os.environ.get("AGENT_MAX_TOOL_OUTPUT_CHARS", "8000")
 )
-AGENT_LLM_TIMEOUT_SEC: float = float(os.environ.get("AGENT_LLM_TIMEOUT_SEC", "90"))
 
 
 # ---------------------------------------------------------------------------
@@ -76,16 +68,28 @@ class ToolCallRecord:
 @dataclass
 class AgentTrace:
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
+    # Three separate provenance fields (AI-team review refinement):
+    #   backend  = request-facing key, e.g. "gemma" | "claude" | "gpt5mini"
+    #   provider = vendor tag,        e.g. "vllm"  | "anthropic" | "openai"
+    #   model    = concrete model id, e.g. "gemma-4-26b-it"
     backend: str = ""
+    provider: str = ""
     model: str = ""
     iterations: int = 0
     tool_call_count: int = 0
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
     total_latency_ms: int = 0
+    backend_latency_ms: int = 0
     stop_reason: str | None = None
     llm_calls: int = 0
     parse_failures: int = 0
+    estimated_cost_usd: float = 0.0
+    # Populated only when a backend adapter returned None. See
+    # backends/base.py docstring for shape.
+    backend_error: dict | None = None
+    # Raw provider usage dicts (one entry per LLM call) for audit.
+    raw_usage: list[dict] = field(default_factory=list)
 
     def to_dict(self, *, include_output_json: bool = False) -> dict:
         calls = []
@@ -101,19 +105,25 @@ class AgentTrace:
             if include_output_json:
                 call_dict["output_json"] = c.output_json
             calls.append(call_dict)
-        return {
-            "tool_calls": calls,
-            "backend": self.backend,
-            "model": self.model,
-            "iterations": self.iterations,
-            "tool_call_count": self.tool_call_count,
-            "total_prompt_tokens": self.total_prompt_tokens,
+        out: dict = {
+            "tool_calls":              calls,
+            "backend":                 self.backend,
+            "provider":                self.provider,
+            "model":                   self.model,
+            "iterations":              self.iterations,
+            "tool_call_count":         self.tool_call_count,
+            "total_prompt_tokens":     self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
-            "llm_calls": self.llm_calls,
-            "parse_failures": self.parse_failures,
-            "total_latency_ms": self.total_latency_ms,
-            "stop_reason": self.stop_reason,
+            "llm_calls":               self.llm_calls,
+            "parse_failures":          self.parse_failures,
+            "total_latency_ms":        self.total_latency_ms,
+            "backend_latency_ms":      self.backend_latency_ms,
+            "stop_reason":             self.stop_reason,
+            "estimated_cost_usd":      self.estimated_cost_usd,
         }
+        if self.backend_error is not None:
+            out["backend_error"] = self.backend_error
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -123,16 +133,25 @@ class AgentTrace:
 
 def run_agent(
     *,
-    http_client: httpx.Client,
+    backend: Backend,
     search_api_client: SearchAPIClient,
     question: str,
     scope: dict | None,
 ) -> dict:
     """
-    Run a single /v1/agent/ask turn. Returns the structured response dict.
+    Run a single /v1/agent/ask turn against the given `backend`. Returns
+    the structured response dict.
+
+    `backend.generate()` is called once per iteration. The backend
+    adapter owns SDK/error/usage details; this loop owns the protocol
+    + post-hoc verification.
     """
     t0 = time.perf_counter()
-    trace = AgentTrace(backend=AGENT_BACKEND, model=AGENT_MODEL)
+    trace = AgentTrace(
+        backend=backend.name,
+        provider=backend.provider,
+        model=backend.model,
+    )
 
     allow_write = is_report_related_question(question)
     tool_schemas = tools_for_question(question)
@@ -140,11 +159,11 @@ def run_agent(
     system_prompt = build_system_prompt(tool_schemas)
     user_text = scope_preamble(scope) + f"Question: {question}"
 
-    # Conversation log. We drive the model by appending tool_result or
-    # parse-error messages as new user turns.
+    # Conversation log. System prompt lives on the backend side of the
+    # adapter (each adapter is free to wire it into the provider's
+    # preferred "system" field). We pass it separately.
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user",   "content": user_text},
+        {"role": "user", "content": user_text},
     ]
 
     parsed_answer: dict | None = None
@@ -153,22 +172,24 @@ def run_agent(
         trace.iterations += 1
         trace.llm_calls += 1
 
-        llm_response = _call_vllm(http_client, messages, trace)
-        if llm_response is None:
-            # vLLM rejected the request (context length, bad input,
-            # model not loaded, etc.) — break out and emit a degraded
-            # answer. stop_reason is already set inside _call_vllm.
+        content = backend.generate(
+            system_prompt=system_prompt,
+            messages=messages,
+            max_tokens=AGENT_MAX_TOKENS,
+            temperature=AGENT_TEMPERATURE,
+            trace=trace,
+        )
+        if content is None:
+            # Backend adapter has populated trace.backend_error and
+            # trace.stop_reason; emit a degraded answer with context.
+            tag = (trace.backend_error or {}).get("trace_tag", "backend_error")
             parsed_answer = _degraded_answer(
-                "vLLM request was rejected "
-                f"(stop_reason={trace.stop_reason}); "
-                "often caused by the trailer-day tool output exceeding "
-                "the model's context window. Try narrowing the scope "
-                "or asking a more specific question."
+                f"backend {backend.name} ({backend.provider}/{backend.model}) "
+                f"rejected the request (stop_reason={trace.stop_reason}, "
+                f"detail={tag}). Often this is context-window pressure or "
+                "a rate-limit; try narrowing scope or retrying later."
             )
             break
-
-        content = (llm_response.get("choices") or [{}])[0].get("message", {}).get("content", "")
-        trace.stop_reason = (llm_response.get("choices") or [{}])[0].get("finish_reason")
 
         # Record the assistant turn verbatim so the next LLM call sees
         # its own prior output.
@@ -243,6 +264,11 @@ def run_agent(
         )
 
     trace.total_latency_ms = int((time.perf_counter() - t0) * 1000)
+    trace.estimated_cost_usd = estimate_cost_usd(
+        trace.backend,
+        trace.total_prompt_tokens,
+        trace.total_completion_tokens,
+    )
 
     # Post-hoc citation verification: resolves short-prefix markers to
     # full IDs where the trace has a unique match, flags anything it
@@ -266,57 +292,6 @@ def run_agent(
             "unverified_citations": citation_info["unverified_citations"],
         },
     }
-
-
-# ---------------------------------------------------------------------------
-# vLLM call
-# ---------------------------------------------------------------------------
-
-
-def _call_vllm(
-    http_client: httpx.Client,
-    messages: list[dict[str, str]],
-    trace: AgentTrace,
-) -> dict | None:
-    """POST /v1/chat/completions on the local vLLM. Returns the JSON
-    payload, or None on an unrecoverable vLLM error (context length,
-    bad request, etc.). The outer loop uses None to break out cleanly
-    with a degraded answer rather than raising a 503 to the caller.
-
-    We deliberately do NOT pass response_format={"type":"json_object"}:
-    it isn't universally supported across vLLM model backends, and the
-    system prompt already enforces JSON-only output with a parse-failure
-    retry/nudge path.
-    """
-    url = f"{AGENT_VLLM_BASE_URL}/v1/chat/completions"
-    body = {
-        "model": AGENT_MODEL,
-        "messages": messages,
-        "max_tokens": AGENT_MAX_TOKENS,
-        "temperature": AGENT_TEMPERATURE,
-    }
-    try:
-        resp = http_client.post(url, json=body, timeout=AGENT_LLM_TIMEOUT_SEC)
-        resp.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        body_preview = (exc.response.text or "")[:400] if exc.response is not None else ""
-        log.warning(
-            "vLLM rejected request (%s): %s",
-            exc.response.status_code if exc.response is not None else "?",
-            body_preview,
-        )
-        # 4xx from vLLM means the request was malformed OR the context
-        # is too long. Either way, no point retrying at this layer.
-        # Convey the failure as None so the loop can emit a degraded
-        # answer rather than bubbling a 503 to the user.
-        trace.stop_reason = f"vllm_error_{exc.response.status_code if exc.response is not None else 'unknown'}"
-        return None
-    payload = resp.json()
-
-    usage = payload.get("usage") or {}
-    trace.total_prompt_tokens += int(usage.get("prompt_tokens") or 0)
-    trace.total_completion_tokens += int(usage.get("completion_tokens") or 0)
-    return payload
 
 
 # ---------------------------------------------------------------------------
