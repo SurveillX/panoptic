@@ -44,6 +44,7 @@ from .reports import (
     get_report_view,
     list_reports,
 )
+from .dashboard import run_dashboard
 from .trailer_day import get_trailer_day
 from .pull_frame import PullFrameError, run_pull_frame
 from .schemas import (
@@ -217,6 +218,17 @@ def create_app(
     @app.get("/v1/fleet/overview")
     def fleet_overview():
         return get_fleet_overview(engine)
+
+    @app.get("/v1/fleet/dashboard")
+    def fleet_dashboard():
+        try:
+            return run_dashboard(engine)
+        except Exception as exc:
+            log.exception("dashboard failed")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "dashboard failed", "detail": str(exc)[:500]},
+            )
 
     @app.get("/v1/events/{event_id}")
     def event_detail(event_id: str):
