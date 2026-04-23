@@ -1,0 +1,37 @@
+{% extends "base.html.j2" %}
+
+{% block title %}Dashboard — Panoptic Operator{% endblock %}
+
+{% block content %}
+<section class="dashboard">
+
+  <header class="dashboard-header">
+    <h1>Operations dashboard</h1>
+    <div class="dashboard-meta">
+      <span class="dashboard-timestamp" id="dashboard-ts">
+        as of {{ data.generated_at_utc }}
+      </span>
+      <button
+        type="button"
+        class="btn-secondary"
+        hx-get="/dashboard/fragment"
+        hx-target="#dashboard-body"
+        hx-swap="outerHTML"
+        hx-indicator="#dashboard-refreshing">
+        Refresh now
+      </button>
+      <span id="dashboard-refreshing" class="htmx-indicator">refreshing…</span>
+    </div>
+  </header>
+
+  {# Auto-refresh every 30 seconds — #dashboard-body swaps itself. #}
+  <div
+    id="dashboard-body"
+    hx-get="/dashboard/fragment"
+    hx-trigger="every 30s"
+    hx-swap="outerHTML">
+    {% include "dashboard_fragment.html.j2" %}
+  </div>
+
+</section>
+{% endblock %}

@@ -1,0 +1,176 @@
+{# Body of the dashboard — rendered on initial load AND as the HTMX
+   swap target every 30 seconds. The outer wrapper ID must persist
+   so hx-swap="outerHTML" can target it. #}
+<div id="dashboard-body" class="dashboard-body">
+
+  {% if data.errors %}
+  <section class="dash-section dash-errors">
+    <h2>Degraded sections</h2>
+    <ul>
+      {% for err in data.errors %}
+      <li>{{ err }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {# ------------------ Service health ------------------ #}
+  <section class="dash-section">
+    <h2>Service health ({{ data.services | length }} services)</h2>
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>service</th>
+          <th>status</th>
+          <th>probe</th>
+          <th>uptime</th>
+          <th>error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in data.services %}
+        <tr class="svc-row {% if s.healthy %}svc-ok{% else %}svc-bad{% endif %}">
+          <td class="svc-name">{{ s.name }}</td>
+          <td>
+            <span class="svc-pill svc-pill-{{ 'ok' if s.healthy else 'bad' }}">
+              {{ s.status }}
+            </span>
+          </td>
+          <td class="svc-probe">{{ s.probe_ms }} ms</td>
+          <td class="svc-uptime">
+            {% if s.uptime_sec is not none %}{{ (s.uptime_sec // 3600) }} h{% else %}—{% endif %}
+          </td>
+          <td class="svc-err">{{ s.error or "" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  {# ------------------ Ingest activity per trailer ------------------ #}
+  <section class="dash-section">
+    <h2>Ingest activity ({{ data.ingest.trailers | length }} trailers, last 24h)</h2>
+    {% if data.ingest.trailers %}
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>trailer</th>
+          <th>last bucket</th>
+          <th>last image</th>
+          <th class="col-group">buckets</th>
+          <th class="col-group" title="alert">alert</th>
+          <th class="col-group" title="anomaly">anomaly</th>
+          <th class="col-group" title="baseline">baseline</th>
+          <th class="col-group" title="novelty">novelty</th>
+          <th class="col-group" title="pulled">pulled</th>
+          <th class="col-group">events</th>
+        </tr>
+        <tr class="dash-subhead">
+          <th></th><th></th><th></th>
+          <th>1h / 24h</th><th>1h / 24h</th><th>1h / 24h</th>
+          <th>1h / 24h</th><th>1h / 24h</th><th>1h / 24h</th>
+          <th>1h / 24h</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in data.ingest.trailers %}
+        <tr>
+          <td class="trailer-id">
+            <a href="/trailer/{{ t.serial_number }}/{{ today }}">{{ t.serial_number }}</a>
+          </td>
+          <td class="ts-compact">{{ (t.last_bucket_utc or "—") | truncate(16, True, "") }}</td>
+          <td class="ts-compact">{{ (t.last_image_utc  or "—") | truncate(16, True, "") }}</td>
+          <td>{{ t.counts_1h.buckets }} / {{ t.counts_24h.buckets }}</td>
+          <td>{{ t.counts_1h.alert }} / {{ t.counts_24h.alert }}</td>
+          <td>{{ t.counts_1h.anomaly }} / {{ t.counts_24h.anomaly }}</td>
+          <td>{{ t.counts_1h.baseline }} / {{ t.counts_24h.baseline }}</td>
+          <td>{{ t.counts_1h.novelty }} / {{ t.counts_24h.novelty }}</td>
+          <td>{{ t.counts_1h.pulled }} / {{ t.counts_24h.pulled }}</td>
+          <td>{{ t.counts_1h.events }} / {{ t.counts_24h.events }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No trailer activity in the last 24h.</p>
+    {% endif %}
+  </section>
+
+  {# ------------------ Queue state ------------------ #}
+  <section class="dash-section">
+    <h2>Job queue</h2>
+    {% if data.jobs %}
+    <table class="dash-table dash-jobs">
+      <thead>
+        <tr>
+          <th>job type</th>
+          <th>state</th>
+          <th class="num">count</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for j in data.jobs %}
+        <tr class="job-state-{{ j.state }}">
+          <td>{{ j.job_type }}</td>
+          <td>{{ j.state }}</td>
+          <td class="num">{{ j.count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No jobs.</p>
+    {% endif %}
+  </section>
+
+  {# ------------------ Rate-limit watch ------------------ #}
+  <section class="dash-section">
+    <h2>
+      Rate-limit watch
+      <small>cap {{ data.rate_limits.cap_per_camera_per_hour }}/hr per camera, warn at {{ data.rate_limits.warn_floor }}</small>
+    </h2>
+    {% if data.rate_limits.cameras_watch %}
+    <table class="dash-table">
+      <thead>
+        <tr>
+          <th>trailer</th>
+          <th>camera</th>
+          <th>alert</th>
+          <th>anomaly</th>
+          <th>baseline</th>
+          <th>novelty</th>
+          <th>pulled</th>
+          <th class="num">total 1h</th>
+          <th>status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in data.rate_limits.cameras_watch %}
+        <tr class="{% if c.total >= c.cap %}cam-critical{% else %}cam-warn{% endif %}">
+          <td class="trailer-id">{{ c.serial_number }}</td>
+          <td class="camera-id">{{ c.camera_id }}</td>
+          <td>{{ c.trigger_counts_1h.alert }}</td>
+          <td>{{ c.trigger_counts_1h.anomaly }}</td>
+          <td>{{ c.trigger_counts_1h.baseline }}</td>
+          <td>{{ c.trigger_counts_1h.novelty }}</td>
+          <td>{{ c.trigger_counts_1h.pulled }}</td>
+          <td class="num">{{ c.total }} / {{ c.cap }}</td>
+          <td>
+            {% if c.total >= c.cap %}
+            <span class="svc-pill svc-pill-bad">at cap</span>
+            {% else %}
+            <span class="svc-pill svc-pill-warn">approaching</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="empty">All cameras below {{ data.rate_limits.warn_floor }}/hr. Trailer trigger budget is healthy.</p>
+    {% endif %}
+  </section>
+
+  <p class="dash-footer">Snapshot {{ data.generated_at_utc }} · auto-refresh every 30s</p>
+
+</div>

@@ -80,6 +80,9 @@ class SearchAPIClient:
     def fleet_overview(self) -> dict:
         return self._get_json("/v1/fleet/overview")
 
+    def fleet_dashboard(self) -> dict:
+        return self._get_json("/v1/fleet/dashboard")
+
     def event_detail(self, event_id: str) -> dict:
         return self._get_json(f"/v1/events/{event_id}")
 

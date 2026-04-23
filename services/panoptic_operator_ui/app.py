@@ -169,6 +169,53 @@ def create_app() -> FastAPI:
         return _render("fleet.html.j2", data=data, today=today)
 
     # ------------------------------------------------------------------
+    # Dashboard (M15) — service health, ingest-by-trailer, queue state,
+    # rate-limit watch. 30s HTMX auto-refresh swaps the inner fragment.
+    # ------------------------------------------------------------------
+
+    def _fetch_dashboard() -> tuple[dict, str]:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        data = client.fleet_dashboard()
+        return data, today
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    def dashboard_page():
+        try:
+            data, today = _fetch_dashboard()
+        except httpx.HTTPError as exc:
+            log.exception("dashboard: upstream failed")
+            return HTMLResponse(
+                content=env.get_template("404.html.j2").render(
+                    title="Search API unreachable",
+                    detail=f"Could not reach {SEARCH_API_URL}: {exc!s}",
+                ),
+                status_code=503,
+            )
+        return _render("dashboard.html.j2", data=data, today=today)
+
+    @app.get("/dashboard/fragment", response_class=HTMLResponse)
+    def dashboard_fragment():
+        """HTMX partial — swapped every 30s into #dashboard-body on the
+        dashboard page. Returning just the body avoids re-rendering the
+        page chrome on each refresh."""
+        try:
+            data, today = _fetch_dashboard()
+        except httpx.HTTPError as exc:
+            log.exception("dashboard fragment: upstream failed")
+            return HTMLResponse(
+                content=(
+                    '<div id="dashboard-body" class="dashboard-body">'
+                    f'<section class="dash-section dash-errors">'
+                    f'<h2>Search API unreachable</h2>'
+                    f'<p>{html.escape(str(exc)[:300])}</p>'
+                    '</section></div>'
+                ),
+                status_code=503,
+            )
+        return _render("dashboard_fragment.html.j2", data=data, today=today)
+
+    # ------------------------------------------------------------------
     # Trailer day — the M10 first vertical slice
     # ------------------------------------------------------------------
 

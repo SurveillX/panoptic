@@ -405,3 +405,100 @@ pre.json {
 }
 .ask-trace-list li { margin-bottom: 0.25em; }
 .ask-unverified-count { color: #8a5a08; font-weight: 600; }
+
+/* ---------- M15 dashboard ---------- */
+.dashboard { padding: 1em 1.2em; }
+.dashboard-header {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 1em; margin-bottom: 1em;
+}
+.dashboard-header h1 { margin: 0; font-size: 1.4em; }
+.dashboard-meta { display: flex; align-items: center; gap: 0.8em; }
+.dashboard-timestamp { color: var(--fg-muted); font-size: 0.85em; font-family: monospace; }
+
+.dashboard-body { display: flex; flex-direction: column; gap: 1.5em; }
+.dash-section {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.8em 1em;
+  background: var(--bg);
+}
+.dash-section h2 {
+  margin: 0 0 0.6em 0;
+  font-size: 1em;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.4em;
+}
+.dash-section h2 small {
+  font-weight: 400;
+  color: var(--fg-muted);
+  font-size: 0.85em;
+  margin-left: 0.6em;
+}
+
+.dash-table { width: 100%; border-collapse: collapse; font-size: 0.85em; }
+.dash-table th, .dash-table td {
+  text-align: left; padding: 0.35em 0.5em; border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.dash-table th { font-weight: 600; color: var(--fg-muted); }
+.dash-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.dash-table .col-group { text-align: right; font-variant-numeric: tabular-nums; }
+.dash-table .dash-subhead th { color: var(--fg-muted); font-weight: 400; font-size: 0.75em; }
+.dash-table .ts-compact { font-family: monospace; font-size: 0.8em; color: var(--fg-muted); }
+.dash-table .trailer-id { font-family: monospace; font-size: 0.85em; }
+.dash-table .camera-id { font-family: monospace; font-size: 0.75em; color: var(--fg-muted); }
+
+/* Service health pills */
+.svc-pill {
+  display: inline-block;
+  padding: 0.1em 0.55em; border-radius: 999px;
+  font-size: 0.75em; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.svc-pill-ok   { background: #e8f5e9; color: #2e7d32; }
+.svc-pill-bad  { background: #ffebee; color: #c62828; }
+.svc-pill-warn { background: #fff3e0; color: #ef6c00; }
+.svc-row.svc-bad td { background: #fff8f8; }
+.svc-name { font-family: monospace; font-size: 0.85em; }
+.svc-probe { font-variant-numeric: tabular-nums; color: var(--fg-muted); font-size: 0.8em; }
+.svc-uptime { color: var(--fg-muted); font-size: 0.8em; }
+.svc-err { color: #c62828; font-size: 0.75em; font-family: monospace; word-break: break-all; }
+
+/* Job state coloring */
+.dash-jobs .job-state-degraded { background: #fff8f8; }
+.dash-jobs .job-state-pending  { background: #fffbf0; }
+.dash-jobs .job-state-failed_terminal { background: #ffebee; color: #c62828; }
+
+/* Rate-limit criticality */
+tr.cam-warn     { background: #fff3e0; }
+tr.cam-critical { background: #ffebee; }
+
+/* Errors banner */
+.dash-errors { border-color: #c62828; background: #fff8f8; }
+.dash-errors h2 { color: #c62828; border-bottom-color: #f5c6cb; }
+.dash-errors ul { margin: 0; padding-left: 1.2em; font-size: 0.85em; }
+
+.dash-footer {
+  text-align: right; color: var(--fg-muted);
+  font-size: 0.75em; font-family: monospace;
+  margin: 0.6em 0 0 0;
+}
+.empty { color: var(--fg-muted); font-style: italic; margin: 0.4em 0; }
+
+/* HTMX refresh indicator */
+.htmx-indicator { display: none; color: var(--fg-muted); font-size: 0.8em; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { display: inline; }
+
+.btn-secondary {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  padding: 0.3em 0.8em;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.85em;
+}
+.btn-secondary:hover { background: var(--bg-alt); }
