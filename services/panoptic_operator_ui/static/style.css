@@ -21,6 +21,7 @@
   --evt-drop:       #455a64;   /* slate — activity collapse (M12) */
   --evt-start:      #2e7d32;   /* green — day-start (M12) */
   --evt-latestart:  #ef6c00;   /* orange — delayed day-start (M12) */
+  --evt-scenechange:#00838f;   /* teal — MobileCLIP2 scene change (M13) */
   --evt-default:    #777;
 
   /* Trigger badge colors (image pane). */
@@ -111,9 +112,10 @@ tbody tr:hover { background: var(--bg-alt); }
 .evt-anomaly_detected    { border-left-color: var(--evt-anomaly)    !important; }
 .evt-activity_spike      { border-left-color: var(--evt-spike)      !important; }
 .evt-after_hours_activity{ border-left-color: var(--evt-afterhours) !important; }
-.evt-activity_drop       { border-left-color: var(--evt-drop)       !important; }
-.evt-activity_start      { border-left-color: var(--evt-start)      !important; }
-.evt-late_start          { border-left-color: var(--evt-latestart)  !important; }
+.evt-activity_drop       { border-left-color: var(--evt-drop)         !important; }
+.evt-activity_start      { border-left-color: var(--evt-start)        !important; }
+.evt-late_start          { border-left-color: var(--evt-latestart)    !important; }
+.evt-scene_change        { border-left-color: var(--evt-scenechange)  !important; }
 .tt-time { white-space: nowrap; }
 
 /* ---------- Images grid ---------- */
@@ -266,6 +268,7 @@ dl.kv dd { margin: 0; }
 .tag.evt-activity_drop        { border-left: 3px solid var(--evt-drop); }
 .tag.evt-activity_start       { border-left: 3px solid var(--evt-start); }
 .tag.evt-late_start           { border-left: 3px solid var(--evt-latestart); }
+.tag.evt-scene_change         { border-left: 3px solid var(--evt-scenechange); }
 
 ul.tags { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0.4em; }
 ul.tags .tag { padding: 0.15em 0.6em; }

@@ -137,6 +137,7 @@ Alembic at migration **010**.
 | M11 | Task-oriented agent layer | ✅ done — new `panoptic_agent` service (13th, `:8500`) runs a prompt-driven tool-use loop. 11 tools wrap existing Search API endpoints; grounded structured answers with evidence-first citations; `"Ask about this day"` panel on the trailer-day page; seed-question harness baseline 7/9 PASS on local Gemma. Access model + guardrails in `docs/AGENT.md` |
 | M11.1 | Multi-backend agent | ✅ done — request-facing keys `gemma`/`claude`/`gpt5mini` dispatch to VLLMBackend/ClaudeBackend/OpenAIBackend via a small Backend protocol. `POST /v1/agent/ask` gains optional `backend` field; new `GET /v1/agent/backends` exposes availability + pricing; trace gains `provider` + `backend_latency_ms` + `estimated_cost_usd` + `backend_error`; runner.py gains `--backend` + `--compare` + `--csv-out` for cross-backend A/B. Hosted adapters dormant until their API key is set. Prompt-driven parity across all three backends preserved for apples-to-apples benchmarking. |
 | M12 | Expanded bucket-marker derivation | ✅ done (3 of 4) — adds `drop` + `start` + `late_start` to the derivation vocabulary alongside existing `spike` + `after_hours`. New `shared/signals/history.py` fetches three explicit baselines (rolling-bucket, same-day, day-level); `derive_history_markers` runs inside `ingest_bucket` with a `produce` filter so production ships a safe subset. All thresholds centralized in `shared/signals/derive.py`. `scripts/rederive_markers.py` provides the Mode-1 dry-run + Mode-2 additive-apply rederive path (never overwrites existing markers; idempotent). Dormant summary-agent branches for new markers light up automatically. UTC-day handling documented as explicit v1 compromise in `docs/M12.md`. `underperforming` implemented but held behind the production gate — Mode-1 dry-run against yard data was degenerate (bursty baselines suppress the marker); deferred to M12.1 pending broader data. |
+| M13 | Accept `novelty` trigger from Cognia | ✅ done — `TrailerImageMetadata.trigger` widened to `Literal["alert", "anomaly", "baseline", "novelty"]`; novelty images (MobileCLIP2 scene-change pushes from cognia-selector) now produce `panoptic_events` rows with new event_type `scene_change`. Severity derived from `1 − similarity` (lower cosine = more visually novel = higher severity). `ImageMetadataContext` gains `extra="allow"` so per-trigger context fields (rule_id/incident_id/similarity/sample_id/…) round-trip through `context_json` verbatim. Both `_TRIGGER_TO_EVENT_TYPE` maps (event build + search filter) extended in lock-step. Teal `--evt-scenechange` CSS accent on the operator UI. `baseline` still explicitly excluded from events (deferred to M13.1 if operational value becomes clear). 18 new unit tests; no schema migration. |
 
 ---
 
@@ -643,6 +644,73 @@ Three new replay scenarios (`drop_midday`, `start_of_day`,
 - P12c `fe85489` — start marker
 - P12d `ffa6177` — late_start marker + time-based quiet-run refactor
 - P12f/P12e-eval `3a8e352` — Mode-1 rederive + drop tightening + underperforming deferral
+
+### 6.16 M13 — accept `novelty` trigger from Cognia
+
+Cognia's trailer-side aggregator now emits **four** image trigger
+values — `alert`, `anomaly`, `baseline`, `novelty` — per the
+`docs/panoptic-push.md` spec Bryan handed over. The fourth value,
+`novelty`, is driven by cognia-selector's MobileCLIP2 scene-change
+detector and flags visually meaningful changes (cosine similarity
+below the `SELECTOR_SIMILARITY_THRESHOLD = 0.85` default).
+
+**The bug M13 fixes:** Panoptic's ingest schema was
+`Literal["alert", "anomaly", "baseline"]` — any `novelty` push
+returned 422 at the webhook. Cognia's retry policy (~10× over
+~400s) then dead-lettered the event. **Every scene-change push
+was being lost silently** until M13 landed.
+
+**What shipped:**
+- `shared/schemas/image.py` — trigger Literal widened; novelty is
+  a first-class trigger. `ImageMetadataContext` gains
+  `extra="allow"` so per-trigger context fields
+  (`similarity`/`sample_id`/`rule_id`/`incident_id`/…) flow into
+  `panoptic_images.context_json` verbatim instead of being
+  silently dropped by pydantic. Same-day fix unlocks future Cognia
+  payload additions without schema edits.
+- `shared/schemas/event.py` — new `EVENT_TYPE_SCENE_CHANGE = "scene_change"`
+  constant. Separate from `activity_spike` (temporal count) and
+  `anomaly_detected` (bucket-stats) — visual-similarity signal has
+  its own operational meaning.
+- `shared/events/build.py` — extends `_TRIGGER_TO_EVENT_TYPE` with
+  `novelty → scene_change`. Severity derived from
+  `clamp(1 − similarity, 0, 1)`; confidence mirrors severity.
+  Alert/anomaly behavior preserved (still reads `max_anomaly_score`).
+  `baseline` still explicitly excluded from events — the hourly
+  liveness frame stays image-only evidence.
+- `services/search_api/executor.py` — mirror map extended so
+  `?trigger=novelty` filters correctly at the search layer. (Two
+  maps now kept in lock-step; collapse to one is a future cleanup.)
+- `services/panoptic_operator_ui/static/style.css` — teal
+  `--evt-scenechange` (`#00838f`) color var + matching
+  `.evt-scene_change` class for table borders and tag chips.
+- **Zero migrations.** `panoptic_events.event_type` is TEXT;
+  `metadata_json` is JSONB; both absorb the new event_type without
+  schema change.
+
+**Scope decision (locked):** novelty only. `baseline` remains
+excluded from the event layer. Making baseline-as-event would add
+~24 events/camera/day of low-signal noise that would need separate
+filter-by-default work in the operator UI, agent, and summary
+prompts. Revisit as M13.1 if operational value becomes clear
+(e.g., on low-coverage days where baseline is the only evidence).
+
+**Tests:** 18 new cases (trigger acceptance matrix, timestamp_ms
+rule preserved across triggers, context passthrough for both
+declared and extra fields, novelty severity mapping including
+saturation and missing-similarity fallback, deterministic
+event_id, existing alert/anomaly/baseline behavior unchanged).
+57/57 total in `tests/shared/`.
+
+**Rate-limit watch (not M13 scope, worth a STATUS note):** Cognia's
+per-camera cap is 4 images/hour across ALL triggers combined.
+Frequent novelty fires on a given camera could crowd out alerts.
+The trailer side exposes `SELECTOR_SIMILARITY_THRESHOLD` and
+`PUSH_MAX_PER_CAMERA_PER_HOUR` as tunables; Panoptic can request
+changes if we start seeing trigger starvation in the logs.
+
+**Commits:** `45bdcaf` (schema + event mapping + tests) and the
+polish commit that follows this edit (CSS + STATUS).
 
 ---
 
