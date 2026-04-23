@@ -45,7 +45,13 @@ from .reports import (
     list_reports,
 )
 from .trailer_day import get_trailer_day
-from .schemas import PeriodSummarizeRequest, SearchRequest, VerifyRequest
+from .pull_frame import PullFrameError, run_pull_frame
+from .schemas import (
+    PeriodSummarizeRequest,
+    PullFrameRequest,
+    SearchRequest,
+    VerifyRequest,
+)
 from .verify import run_verification
 
 log = logging.getLogger(__name__)
@@ -137,6 +143,32 @@ def create_app(
             )
 
         return response.model_dump()
+
+    @app.post("/v1/search/pull_frame")
+    def search_pull_frame(request: Request, body: dict):
+        try:
+            req = PullFrameRequest.model_validate(body)
+        except ValidationError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "validation failed", "detail": json.loads(exc.json())},
+            )
+
+        try:
+            response = run_pull_frame(req, engine, redis_client=_redis)
+        except PullFrameError as exc:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"error": "pull_frame failed", "detail": exc.detail},
+            )
+        except Exception as exc:
+            log.exception("pull_frame failed")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "pull_frame failed", "detail": str(exc)[:500]},
+            )
+
+        return response.model_dump(mode="json")
 
     # ------------------------------------------------------------------
     # M9 — report endpoints

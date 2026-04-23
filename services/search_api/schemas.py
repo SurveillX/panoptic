@@ -13,11 +13,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 RecordType = Literal["summary", "image", "event"]
-TriggerValue = Literal["alert", "anomaly", "baseline"]
+TriggerValue = Literal["alert", "anomaly", "baseline", "novelty", "pulled"]
 SummaryLevel = Literal["camera", "hour", "day", "site"]
 
 DEFAULT_RECORD_TYPES: list[RecordType] = ["summary", "image", "event"]
@@ -467,3 +467,32 @@ class FleetOverviewResponse(BaseModel):
     trailers: list[FleetTrailer] = Field(default_factory=list)
     count: int = 0
     generated_at_utc: str
+
+
+# ---------------------------------------------------------------------------
+# M14 — on-demand continuum pull
+# ---------------------------------------------------------------------------
+
+
+class PullFrameRequest(BaseModel):
+    """Pull a JPEG frame from a trailer's Continuum endpoint."""
+
+    model_config = ConfigDict(strict=False)
+
+    serial_number: str
+    camera_id: str
+    timestamp_utc: datetime
+    width: int = Field(default=640, ge=64, le=4096)
+    quality: int = Field(default=85, ge=1, le=100)
+    reason: str | None = None   # optional operator/agent audit note
+
+
+class PullFrameResponse(BaseModel):
+    """Response from POST /v1/search/pull_frame."""
+
+    image_id: str
+    status: Literal["created", "already_exists"]
+    storage_path: str
+    caption_status: str
+    bucket_start_utc: datetime
+    bucket_end_utc: datetime
