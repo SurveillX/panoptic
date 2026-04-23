@@ -285,8 +285,9 @@ def _hydrate_events_by_image(engine, image_ids: list[str]) -> dict[str, dict]:
 
 
 _TRIGGER_TO_EVENT_TYPE = {
-    "alert": "alert_created",
+    "alert":   "alert_created",
     "anomaly": "anomaly_detected",
+    "novelty": "scene_change",
 }
 
 

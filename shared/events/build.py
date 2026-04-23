@@ -42,6 +42,7 @@ from shared.schemas.event import (
     EVENT_TYPE_ALERT_CREATED,
     EVENT_TYPE_ANOMALY_DETECTED,
     EVENT_TYPE_LATE_START,
+    EVENT_TYPE_SCENE_CHANGE,
     EVENT_TYPE_UNDERPERFORMING,
 )
 
@@ -56,10 +57,13 @@ _MARKER_TO_EVENT_TYPE: dict[str, str] = {
     "underperforming": EVENT_TYPE_UNDERPERFORMING,
 }
 
-# Image trigger → canonical event_type. 'baseline' never produces an event.
+# Image trigger → canonical event_type. `baseline` never produces an event
+# (periodic liveness frame; too low-signal per-push). `novelty` DOES —
+# MobileCLIP2 scene-change is a first-class visual signal (M13).
 _TRIGGER_TO_EVENT_TYPE: dict[str, str] = {
-    "alert": EVENT_TYPE_ALERT_CREATED,
+    "alert":   EVENT_TYPE_ALERT_CREATED,
     "anomaly": EVENT_TYPE_ANOMALY_DETECTED,
+    "novelty": EVENT_TYPE_SCENE_CHANGE,
 }
 
 
@@ -147,10 +151,19 @@ def build_event_row_from_image(image_row: dict) -> dict:
     event_time = image_row.get("captured_at_utc") or image_row["bucket_start_utc"]
 
     context = image_row.get("context_json") or {}
-    # severity and confidence drawn from the trailer-provided anomaly score
-    # when available; otherwise null. Keep the raw context in metadata_json
-    # for audit.
-    severity = context.get("max_anomaly_score") if isinstance(context, dict) else None
+    # severity/confidence source differs by trigger:
+    #   alert / anomaly — drawn from context.max_anomaly_score (trailer-provided)
+    #   novelty         — derived from 1 - context.similarity (lower similarity
+    #                      = more visually novel, more severe). M13.
+    # Unknown fields fall through to None, which _clamp_unit absorbs cleanly.
+    severity: float | None = None
+    if isinstance(context, dict):
+        if trigger == "novelty":
+            sim = context.get("similarity")
+            if isinstance(sim, (int, float)):
+                severity = max(0.0, min(1.0, 1.0 - float(sim)))
+        else:
+            severity = context.get("max_anomaly_score")
     confidence = severity  # single-value proxy for v1
 
     return {
@@ -253,6 +266,8 @@ def _image_title(event_type: str) -> str:
         return "Alert created"
     if event_type == EVENT_TYPE_ANOMALY_DETECTED:
         return "Anomaly detected"
+    if event_type == EVENT_TYPE_SCENE_CHANGE:
+        return "Scene change"
     return event_type
 
 

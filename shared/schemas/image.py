@@ -21,7 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ImageMetadataContext(BaseModel):
-    model_config = ConfigDict(strict=False)
+    # extra="allow" lets per-trigger Cognia fields (similarity, sample_id,
+    # reason, rule_id, incident_id, etc.) flow into context_json verbatim.
+    # Panoptic-specific typed fields stay declared; anything else is
+    # preserved by model_dump().
+    model_config = ConfigDict(strict=False, extra="allow")
 
     max_anomaly_score: float | None = None
     max_count: int | None = None
@@ -87,7 +91,7 @@ class TrailerImageMetadata(BaseModel):
     bucket_start: datetime
     bucket_end: datetime
 
-    trigger: Literal["alert", "anomaly", "baseline"]
+    trigger: Literal["alert", "anomaly", "baseline", "novelty"]
     timestamp_ms: int | None = None
     captured_at_utc: datetime | None = None
 

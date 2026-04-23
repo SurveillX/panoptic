@@ -40,6 +40,11 @@ EVENT_TYPE_ACTIVITY_START = "activity_start"
 EVENT_TYPE_LATE_START = "late_start"
 EVENT_TYPE_UNDERPERFORMING = "underperforming"
 
+# M13: scene-change events emitted by cognia-selector's MobileCLIP2 novelty
+# detector. Distinct from activity_spike (temporal-count anomaly) and
+# anomaly_detected (bucket-stats anomaly) — this is a visual-similarity signal.
+EVENT_TYPE_SCENE_CHANGE = "scene_change"
+
 
 class EventRecord(BaseModel):
     """
