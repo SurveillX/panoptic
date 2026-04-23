@@ -108,10 +108,10 @@ what would light up if they added a key.
 - `POST /v1/agent/ask` enforces a soft in-memory rate limit
   (`AGENT_ASK_RATE_PER_MIN=30` default). Over the cap returns 429.
 
-## Tool surface (11 tools)
+## Tool surface (12 tools)
 
-All tools are 1:1 wrappers over existing Search API endpoints. **No new
-backend endpoints land with M11.**
+Most tools are 1:1 wrappers over existing Search API read endpoints.
+M14 adds the first write-to-evidence tool (`pull_frame`).
 
 Read tools (always available):
 - `search` — hybrid search across summaries / images / events
@@ -122,6 +122,15 @@ Read tools (always available):
 - `get_event`, `get_summary`, `get_image` — single-row detail endpoints
 - `list_reports` — recent report metadata
 - `get_report` — one report's status + metadata
+
+Evidence-fetching tool (always available; rate-limited 10/min
+process-wide):
+- `pull_frame` — M14. Pulls a JPEG from a trailer's Continuum endpoint
+  at a specific timestamp and persists it as a `panoptic_images` row
+  with `source='on_demand_pull'`. Used when the agent needs visual
+  evidence for a moment not covered by cached baseline / novelty /
+  alert / anomaly images. Caption enrichment is async; the image_id
+  is returned immediately and becomes citable.
 
 Gated write tool (only visible to the model when the question's text
 matches a report-intent regex — prevents the agent from choosing

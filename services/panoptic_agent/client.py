@@ -87,6 +87,28 @@ class SearchAPIClient:
             body["filters"] = filters
         return self._post_json("/v1/search/verify", body)
 
+    def pull_frame(
+        self,
+        *,
+        serial_number: str,
+        camera_id: str,
+        timestamp_utc: str,
+        reason: str | None = None,
+    ) -> dict:
+        """
+        M14 on-demand continuum pull. Fetches a JPEG from the trailer and
+        persists it as a panoptic_images row. Returns {image_id, status,
+        storage_path, caption_status, bucket_start_utc, bucket_end_utc}.
+        """
+        body: dict = {
+            "serial_number": serial_number,
+            "camera_id":     camera_id,
+            "timestamp_utc": timestamp_utc,
+        }
+        if reason:
+            body["reason"] = reason
+        return self._post_json("/v1/search/pull_frame", body)
+
     def summarize_period(
         self,
         *,

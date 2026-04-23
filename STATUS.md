@@ -138,6 +138,7 @@ Alembic at migration **010**.
 | M11.1 | Multi-backend agent | ✅ done — request-facing keys `gemma`/`claude`/`gpt5mini` dispatch to VLLMBackend/ClaudeBackend/OpenAIBackend via a small Backend protocol. `POST /v1/agent/ask` gains optional `backend` field; new `GET /v1/agent/backends` exposes availability + pricing; trace gains `provider` + `backend_latency_ms` + `estimated_cost_usd` + `backend_error`; runner.py gains `--backend` + `--compare` + `--csv-out` for cross-backend A/B. Hosted adapters dormant until their API key is set. Prompt-driven parity across all three backends preserved for apples-to-apples benchmarking. |
 | M12 | Expanded bucket-marker derivation | ✅ done (3 of 4) — adds `drop` + `start` + `late_start` to the derivation vocabulary alongside existing `spike` + `after_hours`. New `shared/signals/history.py` fetches three explicit baselines (rolling-bucket, same-day, day-level); `derive_history_markers` runs inside `ingest_bucket` with a `produce` filter so production ships a safe subset. All thresholds centralized in `shared/signals/derive.py`. `scripts/rederive_markers.py` provides the Mode-1 dry-run + Mode-2 additive-apply rederive path (never overwrites existing markers; idempotent). Dormant summary-agent branches for new markers light up automatically. UTC-day handling documented as explicit v1 compromise in `docs/M12.md`. `underperforming` implemented but held behind the production gate — Mode-1 dry-run against yard data was degenerate (bursty baselines suppress the marker); deferred to M12.1 pending broader data. |
 | M13 | Accept `novelty` trigger from Cognia | ✅ done — `TrailerImageMetadata.trigger` widened to `Literal["alert", "anomaly", "baseline", "novelty"]`; novelty images (MobileCLIP2 scene-change pushes from cognia-selector) now produce `panoptic_events` rows with new event_type `scene_change`. Severity derived from `1 − similarity` (lower cosine = more visually novel = higher severity). `ImageMetadataContext` gains `extra="allow"` so per-trigger context fields (rule_id/incident_id/similarity/sample_id/…) round-trip through `context_json` verbatim. Both `_TRIGGER_TO_EVENT_TYPE` maps (event build + search filter) extended in lock-step. Teal `--evt-scenechange` CSS accent on the operator UI. `baseline` still explicitly excluded from events (deferred to M13.1 if operational value becomes clear). 18 new unit tests; no schema migration. |
+| M14 | On-demand continuum pull (agent tool v1) | ✅ done (v1) — new `POST /v1/search/pull_frame` endpoint + `pull_frame` agent tool (12th tool). Wraps the existing `ContinuumClient` (already used by the summary agent for VLM keyframes) to fetch a JPEG from a trailer at a specific moment and persist it as a `panoptic_images` row with `source='on_demand_pull'`, `trigger='pulled'`, `is_searchable=false`. Caption + embedding jobs enqueue automatically; no event row produced (`pulled` not in `_TRIGGER_TO_EVENT_TYPE`). Deterministic `image_id` with `ON CONFLICT DO NOTHING` gives idempotent retries. Server-side rate limit 10/min protects trailer bandwidth. Also fixes a quiet M13 gap: `TriggerValue` Literal in search filters was missing `novelty` + `pulled`. 13 new unit tests covering bucket-snap, dedup, happy path, 404/403/502 error propagation, rate-limit window. No schema migration. Verify auto-pull + report gap-fill + multi-frame pull deferred to M14.1. |
 
 ---
 
@@ -711,6 +712,74 @@ changes if we start seeing trigger starvation in the logs.
 
 **Commits:** `45bdcaf` (schema + event mapping + tests) and the
 polish commit that follows this edit (CSS + STATUS).
+
+### 6.17 M14 — on-demand continuum pull (agent tool v1)
+
+New `POST /v1/search/pull_frame` endpoint + `pull_frame` agent tool.
+The `ContinuumClient` capability at `shared/clients/continuum.py` has
+been in production since the summary-agent work (used for VLM
+keyframe fetch during bucket summarization). M14 exposes it as an
+externally-callable endpoint and wires it into the agent so operators
+asking about moments not covered by cached images can pull fresh
+visual evidence from the trailer's recording buffer.
+
+**Why now:** Cognia's baseline cadence dropped to 1/hr, meaning
+per-camera image density is sparser than it used to be. Many
+moments now fall between cached baseline and novelty images.
+Operators asking "what was happening at 14:37?" may land on a window
+where the closest cached image is 20 minutes away. With
+`pull_frame`, the agent can request exactly the moment the operator
+cares about.
+
+**Persistence shape:**
+- `source='on_demand_pull'` (new value; existing column)
+- `trigger='pulled'` (TEXT column, no enum constraint)
+- `is_searchable=false` — pulled frames don't pollute general
+  retrieval. Still citable by image_id and render in the operator
+  UI when referenced.
+- Caption + embedding workers pick them up via the existing
+  `caption_status='pending'` state machine. No worker changes.
+- No `panoptic_events` row — `'pulled'` not in
+  `shared/events/build._TRIGGER_TO_EVENT_TYPE`, so the event
+  producer skips pulled images naturally. Pulled frames are
+  evidence, not triggers.
+
+**Dedup + idempotency:** `image_id` is deterministic — same
+`(serial, camera, bucket, timestamp_ms)` produces the same ID. The
+handler short-circuits on pre-existing rows (saves a trailer round
+trip) and uses `ON CONFLICT DO NOTHING` on INSERT for race safety.
+
+**Rate limit:** 10 pulls/minute process-wide (`_RATE_LIMIT_MAX` in
+`services/search_api/pull_frame.py`). Protects trailer bandwidth
+and caption-worker backlog from a runaway agent. Window-based
+deque; sliding on the monotonic clock.
+
+**Error surface:** `PullFrameError` maps structured failures to HTTP:
+- 404 — `ContinuumClient.fetch_frame` returned None (no recording).
+- 403 — `ContinuumAuthError` from the trailer.
+- 502 — `ContinuumNetworkError` after retries.
+- 429 — rate limit exceeded.
+
+**Agent usage:** `pull_frame` is in `_ALWAYS_TOOLS`. The tool
+description steers the model to use it sparingly — each call costs
+a trailer round-trip. Returned `image_id` is immediately citable;
+caption lands a few seconds later once the caption worker runs, at
+which point `get_image` returns the full row.
+
+**M13 gap fixed as a byproduct:** `TriggerValue` Literal in
+`services/search_api/schemas.py` was missing `novelty` (M13) and
+`pulled` (M14) — callers couldn't filter search by either. Both
+added in the same commit as `PullFrameRequest`/`Response`.
+
+**Explicit non-goals (M14.1 candidates):**
+- Auto-pull from `verify` when it returns `insufficient_evidence`.
+- Report gap-fill for thin-baseline days.
+- Multi-frame pull (`pull_frames_around(ts, count, window)`).
+- Promoting high-signal pulls into general retrieval via a quality
+  gate (flipping `is_searchable=true`).
+
+**Commits:** `3033086` (endpoint + persistence + tests) and the
+commit that follows this edit (client + tool + docs + STATUS).
 
 ---
 

@@ -210,6 +210,40 @@ GET_REPORT_TOOL = {
     },
 }
 
+PULL_FRAME_TOOL = {
+    "name": "pull_frame",
+    "description": (
+        "Fetch a JPEG frame from a trailer at a specific moment when the "
+        "cached images don't cover the timestamp you need. Useful when "
+        "the user asks about a moment that falls between cached "
+        "baseline/novelty images, or when you need direct visual "
+        "evidence to ground a claim. Pulled frames persist as normal "
+        "panoptic_images rows with source='on_demand_pull' — you can "
+        "cite the returned image_id like any other image. Caption "
+        "enrichment is asynchronous; the image_id is returned "
+        "immediately with caption_status='pending'. Call get_image later "
+        "if you need the caption text. Use sparingly — each pull costs "
+        "a trailer round-trip and caption worker budget."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "serial_number": {"type": "string"},
+            "camera_id":     {"type": "string"},
+            "timestamp_utc": {
+                "type": "string",
+                "description": "ISO 8601 UTC (e.g., '2026-04-23T14:35:12+00:00').",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Optional audit note — why this frame was pulled.",
+            },
+        },
+        "required": ["serial_number", "camera_id", "timestamp_utc"],
+    },
+}
+
+
 GENERATE_DAILY_REPORT_TOOL = {
     "name": "generate_daily_report",
     "description": (
@@ -230,8 +264,8 @@ GENERATE_DAILY_REPORT_TOOL = {
 }
 
 
-# Tools always available to the model (11 total with generate).
-# Order matches plan §2.
+# Tools always available to the model (12 total including M14 pull_frame;
+# generate_daily_report is gated separately behind a report-intent regex).
 _ALWAYS_TOOLS = [
     SEARCH_TOOL,
     VERIFY_TOOL,
@@ -243,6 +277,7 @@ _ALWAYS_TOOLS = [
     GET_IMAGE_TOOL,
     LIST_REPORTS_TOOL,
     GET_REPORT_TOOL,
+    PULL_FRAME_TOOL,
 ]
 
 _REPORT_WRITE_TOOL = GENERATE_DAILY_REPORT_TOOL
@@ -348,6 +383,14 @@ def dispatch_tool(
         )
     if tool_name == "get_report":
         return client.get_report(report_id=tool_input["report_id"])
+
+    if tool_name == "pull_frame":
+        return client.pull_frame(
+            serial_number=tool_input["serial_number"],
+            camera_id=tool_input["camera_id"],
+            timestamp_utc=tool_input["timestamp_utc"],
+            reason=tool_input.get("reason"),
+        )
 
     if tool_name == "generate_daily_report":
         if not allow_write:
